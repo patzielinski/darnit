@@ -1,0 +1,58 @@
+# Example OpenSSF Baseline Configuration
+# Copy this file to .baseline.toml in your repository root
+
+version = "1.0"
+
+# Global settings
+[settings]
+# Default adapter for checks (builtin uses the standard OSPS checks)
+default_check_adapter = "builtin"
+
+# Default adapter for remediations
+default_remediation_adapter = "builtin"
+
+# Cache check results for faster re-runs
+cache_results = true
+cache_ttl = 300  # 5 minutes
+
+# Timeout for adapter operations (seconds)
+timeout = 300
+
+# Define custom adapters
+# Example: Kusari for SCA and dependency scanning
+[adapters.kusari]
+type = "kusari"
+command = "kusari"
+controls = ["OSPS-VM-05.02", "OSPS-VM-05.03"]
+
+# Example: Custom script for security checks
+# [adapters.security-scanner]
+# type = "script"
+# command = "./scripts/security-check.sh"
+# output_format = "json"
+# controls = ["OSPS-SA-02"]
+# supports_batch = false
+
+# Per-control configuration
+# Use Kusari for pre-release SCA checks
+[controls."OSPS-VM-05.02"]
+# Check uses Kusari adapter
+check = { adapter = "kusari" }
+# Remediation still uses builtin (provides guidance)
+remediation = { adapter = "builtin" }
+
+# Use Kusari for dependency scanning
+[controls."OSPS-VM-05.03"]
+check = { adapter = "kusari" }
+
+# Control groups for shared configuration
+# Useful when multiple controls should use the same adapter
+
+# Example: Group all vulnerability management controls
+[control_groups.vulnerability-management]
+controls = ["OSPS-VM-05.02", "OSPS-VM-05.03"]
+check = { adapter = "kusari" }
+
+# Example: Group documentation controls (uses default builtin adapter)
+# [control_groups.documentation]
+# controls = ["OSPS-DO-01.01", "OSPS-DO-01.02", "OSPS-DO-02.01"]

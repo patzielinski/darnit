@@ -1,0 +1,29 @@
+"""darnit-baseline - OpenSSF Baseline (OSPS v2025.10.10) implementation for darnit.
+
+This package provides the OpenSSF Baseline compliance checks as a darnit plugin.
+It registers automatically via Python entry points when installed.
+
+Usage:
+    # Automatic registration via entry points
+    from darnit.core.discovery import discover_implementations
+    implementations = discover_implementations()
+    baseline = implementations.get("openssf-baseline")
+
+    # Direct access
+    from darnit_baseline import register
+    implementation = register()
+"""
+
+__version__ = "0.1.0"
+
+
+def register():
+    """Register the OpenSSF Baseline implementation with darnit.
+
+    This function is called by darnit's plugin discovery system via entry points.
+
+    Returns:
+        OSPSBaselineImplementation: The registered implementation instance.
+    """
+    from .implementation import OSPSBaselineImplementation
+    return OSPSBaselineImplementation()

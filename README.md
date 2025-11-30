@@ -1,0 +1,250 @@
+# Darnit
+
+> *"Darnit patches holes in your software - like darning a sock, but for code."*
+
+**Darnit** is a pluggable compliance audit framework that helps projects conform to software engineering best practices. It provides infrastructure for running compliance audits, generating cryptographic attestations, and automating remediation workflows.
+
+While security is a key focus, Darnit covers the full spectrum of software quality:
+- **Security posture** - vulnerability management, access controls, threat modeling
+- **Testing practices** - code review requirements, CI/CD quality gates, test coverage
+- **Build reproducibility** - artifact signing, dependency pinning, release processes
+- **Project governance** - maintainer documentation, contribution guidelines, response times
+- **Documentation standards** - READMEs, changelogs, support information
+
+This repository includes an MCP (Model Context Protocol) server for AI assistant integration, plus the OpenSSF Baseline implementation as the first supported standard.
+
+## Features
+
+- **Plugin Architecture**: Implement any compliance standard as a darnit plugin
+- **MCP Server**: Integrates with AI assistants (Claude, etc.) for interactive auditing
+- **Automated Remediation**: Generate fixes for compliance gaps with dry-run support
+- **Project Configuration**: Canonical `.project.yaml` for project metadata and documentation locations
+- **Attestation Generation**: Create cryptographically signed in-toto attestations
+- **STRIDE Threat Modeling**: Built-in security threat analysis
+
+## Included Implementation: OpenSSF Baseline
+
+This repository includes `darnit-baseline`, an implementation of the [OpenSSF Baseline](https://baseline.openssf.org/) (OSPS v2025.10.10). The Baseline defines best practices for open source projects across security, quality, and governance:
+
+- **61 Controls** across 3 maturity levels
+- **8 Control Categories**: Access Control, Build & Release, Documentation, Governance, Legal, Quality, Security Architecture, Vulnerability Management
+- **Automated Remediation** for common compliance gaps
+
+The Baseline isn't just about security—it covers testing requirements, build processes, documentation standards, and project governance practices that make software more reliable and maintainable.
+
+## Installation
+
+```bash
+# Using uv
+uv sync
+
+# Run the MCP server
+uv run python main.py
+```
+
+## Quick Start
+
+### Run an Audit
+
+```python
+# Audit a repository against OpenSSF Baseline
+audit_openssf_baseline(
+    local_path="/path/to/repo",
+    level=3  # Check all maturity levels
+)
+```
+
+### Generate Attestation
+
+```python
+# Create a signed compliance attestation
+generate_attestation(
+    local_path="/path/to/repo",
+    sign=True
+)
+```
+
+### Remediate Issues
+
+```python
+# Preview what would be fixed
+remediate_audit_findings(
+    local_path="/path/to/repo",
+    categories=["security_policy", "contributing"],
+    dry_run=True  # Preview changes
+)
+
+# Apply fixes
+remediate_audit_findings(
+    local_path="/path/to/repo",
+    categories=["security_policy", "contributing"],
+    dry_run=False
+)
+```
+
+## Architecture
+
+```
+darnit/                        # Core Framework
+├── core/                      # Plugin system, models, discovery
+├── config/                    # Project configuration (.project.yaml)
+├── sieve/                     # Progressive verification pipeline
+├── attestation/               # in-toto attestation generation
+├── threat_model/              # STRIDE threat modeling
+├── remediation/               # Auto-fix framework
+└── server/                    # MCP server infrastructure
+
+darnit-baseline/               # OpenSSF Baseline Implementation
+├── controls/                  # Control definitions (levels 1-3)
+├── rules/                     # OSPS rules catalog
+├── remediation/               # Baseline-specific remediations
+└── formatters/                # SARIF output formatting
+```
+
+## Project Configuration
+
+The `.project.yaml` file is the canonical source of truth for your project's metadata and documentation locations.
+
+### Example `.project.yaml`
+
+```yaml
+schema_version: "0.1"
+
+project:
+  name: my-project
+  type: software
+
+# Security
+security:
+  policy:
+    path: SECURITY.md
+  threat_model:
+    path: docs/THREAT_MODEL.md
+
+# Governance
+governance:
+  maintainers:
+    path: MAINTAINERS.md
+  contributing:
+    path: CONTRIBUTING.md
+
+# Legal
+legal:
+  license:
+    path: LICENSE
+  contributor_agreement:
+    type: dco
+
+# CI/CD and Quality
+ci:
+  provider: github
+  github:
+    workflows:
+      - .github/workflows/ci.yml
+      - .github/workflows/release.yml
+
+# Build & Release
+build:
+  reproducible: true
+  signing:
+    enabled: true
+```
+
+### Configuration Tools
+
+```python
+# Initialize configuration by discovering existing files
+init_project_config(local_path="/path/to/repo")
+
+# Get current configuration
+get_project_config(local_path="/path/to/repo")
+
+# Confirm project context for accurate audit results
+confirm_project_context(
+    local_path="/path/to/repo",
+    has_releases=True,
+    ci_provider="github"
+)
+```
+
+## Creating a Plugin
+
+To create a new compliance implementation:
+
+1. Create a package with the `darnit.implementations` entry point
+2. Implement the `ComplianceImplementation` protocol
+3. Register controls and checks
+
+```python
+# pyproject.toml
+[project.entry-points."darnit.implementations"]
+my-standard = "my_package:register"
+
+# my_package/__init__.py
+def register():
+    from .implementation import MyImplementation
+    return MyImplementation()
+```
+
+See `packages/darnit-baseline` for a complete example.
+
+## Available MCP Tools
+
+### Audit Tools
+- `audit_openssf_baseline` - Run compliance audit
+- `list_available_checks` - List all available controls
+- `generate_attestation` - Create signed attestation
+
+### Configuration Tools
+- `init_project_config` - Initialize `.project.yaml`
+- `get_project_config` - Get current configuration
+- `confirm_project_context` - Record project context
+
+### Remediation Tools
+- `remediate_audit_findings` - Auto-fix compliance gaps
+- `create_security_policy` - Generate SECURITY.md
+- `enable_branch_protection` - Configure branch protection
+
+### Git Workflow Tools
+- `create_remediation_branch` - Create a branch for fixes
+- `commit_remediation_changes` - Commit changes
+- `create_remediation_pr` - Open a pull request
+- `get_remediation_status` - Check git status
+
+### Analysis Tools
+- `generate_threat_model` - STRIDE threat analysis
+
+### Testing Tools
+- `create_test_repository` - Create a repo that fails all controls (for testing)
+
+## OSPS Control Categories
+
+| Prefix | Category | Focus Area |
+|--------|----------|------------|
+| OSPS-AC | Access Control | Branch protection, authentication, authorization |
+| OSPS-BR | Build & Release | Reproducible builds, artifact signing, CI/CD pipelines |
+| OSPS-DO | Documentation | README quality, changelogs, support information |
+| OSPS-GV | Governance | Maintainer documentation, contribution guidelines, response times |
+| OSPS-LE | Legal | Licensing, contributor agreements (DCO/CLA) |
+| OSPS-QA | Quality | Code review requirements, testing, static analysis |
+| OSPS-SA | Security Architecture | Threat modeling, secure design principles |
+| OSPS-VM | Vulnerability Management | Dependency scanning, CVE handling, security advisories |
+
+## Development
+
+### Running Tests
+
+```bash
+uv run pytest
+```
+
+### Package Structure
+
+| Package | Description |
+|---------|-------------|
+| `darnit` | Core framework - plugin system, configuration, attestation |
+| `darnit-baseline` | OpenSSF Baseline implementation |
+
+## License
+
+Apache-2.0

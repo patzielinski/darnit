@@ -1,0 +1,70 @@
+[project]
+name = "darnit-mcp"
+version = "0.1.0"
+description = "MCP server for security compliance auditing using the darnit framework"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "Michael Lieberman" }
+]
+keywords = ["security", "compliance", "mcp", "openssf", "baseline", "osps"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+]
+dependencies = [
+    "darnit",
+    "darnit-baseline",
+]
+
+[project.urls]
+Homepage = "https://github.com/kusaridev/darnit-mcp"
+Repository = "https://github.com/kusaridev/darnit-mcp"
+Issues = "https://github.com/kusaridev/darnit-mcp/issues"
+
+[project.optional-dependencies]
+attestation = [
+    "darnit[attestation]",
+]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.0.0",
+]
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+darnit = { workspace = true }
+darnit-baseline = { workspace = true }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--tb=short",
+    "--strict-markers",
+]
+markers = [
+    "unit: Unit tests (no external dependencies)",
+    "integration: Integration tests (may require git/gh)",
+    "slow: Slow tests",
+]
+
+[tool.coverage.run]
+source = ["packages/darnit/src", "packages/darnit-baseline/src"]
+omit = ["*/tests/*", "*/__pycache__/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

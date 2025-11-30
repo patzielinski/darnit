@@ -1,0 +1,45 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+.env
+
+# Testing and coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# IDE and editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local configuration (keep examples, ignore actual)
+.baseline.toml
+project.toml
+!example.*.toml
+!example.*.yaml
+
+# Logs
+*.log
+
+# Type checking
+.mypy_cache/
+.pytype/
+
+# Claude Code local settings
+.claude/

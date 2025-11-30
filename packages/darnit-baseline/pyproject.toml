@@ -1,0 +1,19 @@
+[project]
+name = "darnit-baseline"
+version = "0.1.0"
+description = "OpenSSF Baseline (OSPS v2025.10.10) compliance checks for darnit"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "darnit>=0.1.0",
+]
+
+[project.entry-points."darnit.implementations"]
+openssf-baseline = "darnit_baseline:register"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/darnit_baseline"]

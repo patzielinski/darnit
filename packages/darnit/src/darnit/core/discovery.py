@@ -1,0 +1,124 @@
+"""Plugin discovery for darnit compliance implementations.
+
+This module discovers installed compliance implementations via Python entry points.
+Implementations register under the 'darnit.implementations' group.
+"""
+
+import sys
+from typing import Dict, Optional
+
+from .logging import get_logger
+from .plugin import ComplianceImplementation
+
+logger = get_logger("core.discovery")
+
+# Cache for discovered implementations
+_implementations: Optional[Dict[str, ComplianceImplementation]] = None
+
+
+def discover_implementations() -> Dict[str, ComplianceImplementation]:
+    """Discover all installed compliance implementations.
+
+    Implementations are discovered via Python entry points registered under
+    the 'darnit.implementations' group.
+
+    Returns:
+        Dict mapping implementation names to implementation instances.
+
+    Example:
+        implementations = discover_implementations()
+        baseline = implementations.get("openssf-baseline")
+        if baseline:
+            controls = baseline.get_all_controls()
+    """
+    global _implementations
+
+    if _implementations is not None:
+        return _implementations
+
+    _implementations = {}
+
+    # Use importlib.metadata for Python 3.9+
+    if sys.version_info >= (3, 10):
+        from importlib.metadata import entry_points
+        eps = entry_points(group="darnit.implementations")
+    else:
+        from importlib.metadata import entry_points
+        all_eps = entry_points()
+        if hasattr(all_eps, "select"):
+            eps = all_eps.select(group="darnit.implementations")
+        else:
+            eps = all_eps.get("darnit.implementations", [])
+
+    for ep in eps:
+        try:
+            # Load the entry point (calls the register() function)
+            register_func = ep.load()
+            impl = register_func()
+
+            if isinstance(impl, ComplianceImplementation):
+                _implementations[impl.name] = impl
+                logger.info(f"Discovered implementation: {impl.name} v{impl.version}")
+            else:
+                logger.warning(
+                    f"Entry point {ep.name} returned {type(impl)}, "
+                    f"expected ComplianceImplementation"
+                )
+        except (ImportError, AttributeError, TypeError) as e:
+            logger.error(f"Failed to load implementation {ep.name}: {e}")
+            continue
+
+    logger.info(f"Discovered {len(_implementations)} implementation(s)")
+    return _implementations
+
+
+def get_implementation(name: str) -> Optional[ComplianceImplementation]:
+    """Get a specific implementation by name.
+
+    Args:
+        name: Implementation name (e.g., 'openssf-baseline')
+
+    Returns:
+        Implementation instance or None if not found.
+    """
+    implementations = discover_implementations()
+    return implementations.get(name)
+
+
+def get_default_implementation() -> Optional[ComplianceImplementation]:
+    """Get the default implementation.
+
+    Returns the first discovered implementation, preferring 'openssf-baseline'
+    if available.
+
+    Returns:
+        Implementation instance or None if no implementations found.
+    """
+    implementations = discover_implementations()
+
+    # Prefer openssf-baseline as the default
+    if "openssf-baseline" in implementations:
+        return implementations["openssf-baseline"]
+
+    # Otherwise return the first available
+    if implementations:
+        return next(iter(implementations.values()))
+
+    return None
+
+
+def clear_cache() -> None:
+    """Clear the implementation cache.
+
+    Useful for testing or when implementations may have changed.
+    """
+    global _implementations
+    _implementations = None
+
+
+__all__ = [
+    "discover_implementations",
+    "get_implementation",
+    "get_default_implementation",
+    "clear_cache",
+]
