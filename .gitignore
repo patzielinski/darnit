@@ -43,3 +43,4 @@ project.toml
 
 # Claude Code local settings
 .claude/
+baseline-test-repo/
