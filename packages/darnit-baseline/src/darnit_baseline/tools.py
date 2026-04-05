@@ -1036,6 +1036,7 @@ def remediate_audit_findings(
     branch_name: str | None = None,
     auto_commit: bool = False,
     create_pr: bool = False,
+    enhance_with_llm: bool = False,
 ) -> str:
     """
     Apply automated remediations for failed audit controls.
@@ -1062,6 +1063,9 @@ def remediate_audit_findings(
         branch_name: Create/checkout this branch before applying remediations
         auto_commit: Automatically commit after applying remediations
         create_pr: Create a pull request after committing
+        enhance_with_llm: If True, enrich complex documents (ARCHITECTURE.md,
+            threat model) with LLM-generated descriptions after deterministic
+            generation.  Default False (opt-in).
 
     Returns:
         Summary of applied or planned remediations (with git workflow status if applicable)
@@ -1122,6 +1126,7 @@ def remediate_audit_findings(
             categories=categories or ["all"],
             dry_run=dry_run,
             profile=profile,
+            enhance_with_llm=enhance_with_llm,
         )
     except Exception as e:
         return f"❌ Error applying remediations: {e}"

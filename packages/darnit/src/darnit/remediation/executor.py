@@ -112,6 +112,7 @@ class RemediationExecutor:
         templates: dict[str, TemplateConfig] | None = None,
         context_values: dict[str, Any] | None = None,
         project_values: dict[str, Any] | None = None,
+        scan_values: dict[str, Any] | None = None,
         framework_path: str | None = None,
     ):
         """Initialize the executor.
@@ -124,6 +125,9 @@ class RemediationExecutor:
             templates: Template definitions from framework config
             context_values: Confirmed context values for ${context.*} substitution
             project_values: Flattened .project/project.yaml for ${project.*} substitution
+            scan_values: Repo scan values for ${scan.*} substitution.
+                Populated by the implementation's repo scanner with detected
+                languages, CI tools, directory structure, etc.
             framework_path: Absolute path to the framework TOML file.
                 Template ``file`` references are resolved relative to this
                 file's directory.  Falls back to ``local_path`` when None.
@@ -134,6 +138,7 @@ class RemediationExecutor:
         self.default_branch = default_branch
         self._context_values = context_values or {}
         self._project_values = project_values or {}
+        self._scan_values = scan_values or {}
 
         # Auto-detect owner/repo if not provided
         if not owner or not repo:
@@ -179,6 +184,14 @@ class RemediationExecutor:
                     subs[f"${{project.{key}}}"] = value
                 elif value is not None:
                     subs[f"${{project.{key}}}"] = str(value)
+
+        # Add ${scan.*} from repo scanner results
+        if self._scan_values:
+            for key, value in self._scan_values.items():
+                # Keys are already in "scan.X" format from flatten_scan_context
+                var_name = key if key.startswith("scan.") else f"scan.{key}"
+                if isinstance(value, str) and value:
+                    subs[f"${{{var_name}}}"] = value
 
         return subs
 

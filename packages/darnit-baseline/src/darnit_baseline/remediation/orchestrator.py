@@ -8,6 +8,7 @@ requirements) comes from the TOML FrameworkConfig.  The orchestrator
 iterates *controls*, not hardcoded categories.
 """
 
+import os
 from datetime import datetime
 from typing import Any
 
@@ -312,6 +313,7 @@ def _apply_control_remediation(
     owner: str | None = None,
     repo: str | None = None,
     dry_run: bool = True,
+    enhance_with_llm: bool = False,
 ) -> dict[str, Any]:
     """Apply remediation for a single control, driven entirely by TOML.
 
@@ -321,6 +323,7 @@ def _apply_control_remediation(
         owner: GitHub owner/organization
         repo: Repository name
         dry_run: If True, only show what would be done
+        enhance_with_llm: If True, enrich complex docs with LLM after generation
 
     Returns:
         Dict with control_id, status, and result details
@@ -400,6 +403,7 @@ def _apply_control_remediation(
             dry_run=dry_run,
             description=description,
             requires_api=remediation_config.requires_api,
+            enhance_with_llm=enhance_with_llm,
         )
         # Tag unsafe remediations for review
         if not remediation_config.safe:
@@ -436,6 +440,7 @@ def _apply_declarative_remediation(
     dry_run: bool,
     description: str = "",
     requires_api: bool = False,
+    enhance_with_llm: bool = False,
 ) -> dict[str, Any]:
     """Apply a declarative remediation from TOML config.
 
@@ -484,6 +489,18 @@ def _apply_declarative_remediation(
         except Exception:
             pass
 
+        # Scan repository for context-aware template rendering
+        scan_values: dict[str, Any] = {}
+        try:
+            from darnit_baseline.remediation.scanner import (
+                flatten_scan_context,
+                scan_repository,
+            )
+            scan_ctx = scan_repository(local_path)
+            scan_values = flatten_scan_context(scan_ctx)
+        except Exception:
+            pass  # Repo scanning is best-effort
+
         # Create executor with templates and context
         executor = RemediationExecutor(
             local_path=local_path,
@@ -491,6 +508,7 @@ def _apply_declarative_remediation(
             repo=repo,
             templates=templates or {},
             context_values=context_values,
+            scan_values=scan_values,
             framework_path=fw_path,
         )
 
@@ -537,6 +555,43 @@ def _apply_declarative_remediation(
             if remediation_config.project_update:
                 _apply_project_update(local_path, remediation_config.project_update, control_id)
 
+            # Optional LLM enhancement for complex documents
+            enhanced = False
+            if enhance_with_llm and not dry_run:
+                for handler_inv in remediation_config.handlers:
+                    if handler_inv.handler == "file_create":
+                        extra = handler_inv.model_extra or {}
+                        created_path = extra.get("path")
+                        if created_path:
+                            try:
+                                from darnit_baseline.remediation.enhancer import (
+                                    enhance_generated_file,
+                                    get_enhancement_type,
+                                    is_enhanceable,
+                                )
+                                if is_enhanceable(created_path):
+                                    etype = get_enhancement_type(created_path)
+                                    abs_path = os.path.join(local_path, created_path)
+                                    if etype and os.path.isfile(abs_path):
+                                        enriched = enhance_generated_file(
+                                            abs_path, local_path, etype
+                                        )
+                                        if enriched:
+                                            import pathlib
+                                            pathlib.Path(abs_path).write_text(
+                                                enriched, encoding="utf-8"
+                                            )
+                                            enhanced = True
+                                            logger.info(
+                                                "LLM-enhanced %s for %s",
+                                                created_path, control_id,
+                                            )
+                            except Exception as e:
+                                logger.debug(
+                                    "LLM enhancement skipped for %s: %s",
+                                    created_path, e,
+                                )
+
             return {
                 "control_id": control_id,
                 "status": "applied",
@@ -546,6 +601,7 @@ def _apply_declarative_remediation(
                 "result": result.message,
                 "declarative": True,
                 "config_updated": config_updated,
+                "enhanced": enhanced,
             }
         else:
             logger.error(f"Declarative remediation failed: {result.message}")
@@ -751,6 +807,7 @@ def remediate_audit_findings(
     categories: list[str] | None = None,
     dry_run: bool = True,
     profile: str | None = None,
+    enhance_with_llm: bool = False,
 ) -> str:
     """Apply automated remediations for failed audit controls.
 
@@ -765,6 +822,8 @@ def remediate_audit_findings(
         categories: Optional filter — list of category names, or ["all"]
         dry_run: If True (default), show what would be changed without applying
         profile: Optional audit profile name to filter to profile controls only
+        enhance_with_llm: If True, enrich complex documents with LLM-generated
+            descriptions after deterministic generation.  Default False.
 
     Returns:
         Markdown-formatted summary of applied or planned remediations
@@ -921,6 +980,7 @@ def remediate_audit_findings(
             owner=owner,
             repo=repo,
             dry_run=dry_run,
+            enhance_with_llm=enhance_with_llm,
         )
         results.append(result)
 

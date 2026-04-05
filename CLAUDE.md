@@ -367,6 +367,8 @@ else:
 - N/A (writes a single file to the repository) (007-threatmodel-remediation-handler)
 - Python >=3.11 (project targets 3.11/3.12) + darnit (core framework), darnit-baseline (implementation), FastMCP, Pydantic >=2.0, PyYAML, cel-python (008-skills-orchestration)
 - `.project/project.yaml` (YAML), `.baseline.toml` (TOML), framework TOML configs (008-skills-orchestration)
+- Python 3.11+ + darnit (core framework), darnit-baseline (implementation), Pydantic >=2.0, PyYAML, FastMCP (009-context-aware-remediation)
+- Filesystem (`.project/project.yaml`, TOML configs, generated docs) (009-context-aware-remediation)
 
 ## Recent Changes
 - 001-tiered-control-automation: Added Python >=3.11 (project targets 3.11/3.12) + darnit (core framework), darnit-baseline
