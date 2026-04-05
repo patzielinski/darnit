@@ -235,15 +235,15 @@ class TestCIToolPolicyRendering:
 class TestDocCrossReferenceRendering:
     """Verify generated docs link to existing documentation."""
 
-    def test_support_includes_readme_link(self, tmp_path):
-        """Given a README with doc link, SUPPORT.md includes it."""
-        (tmp_path / "README.md").write_text(
-            "# My Project\n\nDocumentation: https://docs.example.com/guide\n"
-        )
+    def test_support_includes_canonical_doc_references(self, tmp_path):
+        """SUPPORT.md links to canonical doc files (README, docs/, CONTRIBUTING)."""
+        (tmp_path / "README.md").write_text("# My Project\n")
 
         rendered = _render_template("support_template", tmp_path)
 
-        assert "https://docs.example.com/guide" in rendered
+        assert "[README](README.md)" in rendered
+        assert "[docs/](docs/)" in rendered
+        assert "[CONTRIBUTING](CONTRIBUTING.md)" in rendered
 
     def test_governance_includes_governance_context(self, tmp_path):
         """Given CONTRIBUTING.md with governance, GOVERNANCE.md references it."""

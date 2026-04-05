@@ -213,7 +213,7 @@ confirm_project_context(
 
 **File:** {config_path}
 
-These confirmations will be used by future audits to give more accurate results.
+These values improve audit accuracy and are used by remediation to generate project-specific files.
 Re-run the audit to see the updated status:
 `audit_openssf_baseline(local_path="{resolved_path}")`
 """

@@ -3,6 +3,7 @@
 
 
 from darnit_baseline.remediation.scanner import (
+    APP_CAPABILITY_MAP,
     DirectoryTree,
     RepoScanContext,
     _scan_ci_workflows,
@@ -454,3 +455,60 @@ class TestScanRepository:
         assert ctx.security_policy_path == "SECURITY.md"
         assert "https://docs.example.com" in ctx.doc_links
         assert "src/" in ctx.directory_tree.top_level
+
+
+# =============================================================================
+# GitHub Apps detection and capability merging (T041)
+# =============================================================================
+
+
+class TestGitHubAppsCapabilityMerge:
+    """Tests for GitHub Apps capability merging into scan context."""
+
+    def test_app_capability_map_has_kusari_inspector(self):
+        assert "kusari-inspector" in APP_CAPABILITY_MAP
+        name, caps = APP_CAPABILITY_MAP["kusari-inspector"]
+        assert name == "Kusari Inspector"
+        assert "sast" in caps
+        assert "sca" in caps
+
+    def test_flatten_merges_app_capabilities_into_ci_tools(self):
+        """GitHub App capabilities merge into scan.ci_*_tools keys."""
+        ctx = RepoScanContext(
+            ci_tools={"sast": ["CodeQL"]},
+            github_apps=[
+                {"name": "Kusari Inspector", "slug": "kusari-inspector",
+                 "capabilities": ["sast", "sca", "secrets", "license"]},
+            ],
+        )
+        flat = flatten_scan_context(ctx)
+
+        # SAST should contain both CodeQL (from workflows) and Kusari Inspector (from apps)
+        assert "CodeQL" in flat["scan.ci_sast_tools"]
+        assert "Kusari Inspector" in flat["scan.ci_sast_tools"]
+        # SCA should be set from app alone (no workflow SCA detected)
+        assert flat["scan.ci_sca_tools"] == "Kusari Inspector"
+        # Secrets and license should be new keys
+        assert flat["scan.ci_secrets_tools"] == "Kusari Inspector"
+        assert flat["scan.ci_license_tools"] == "Kusari Inspector"
+        # App names list
+        assert flat["scan.github_apps"] == "Kusari Inspector"
+
+    def test_flatten_no_duplicate_app_in_existing_tools(self):
+        """If an app name already appears in CI tools, don't duplicate it."""
+        ctx = RepoScanContext(
+            ci_tools={"sast": ["Kusari Inspector"]},
+            github_apps=[
+                {"name": "Kusari Inspector", "slug": "kusari-inspector",
+                 "capabilities": ["sast"]},
+            ],
+        )
+        flat = flatten_scan_context(ctx)
+        # Should appear once, not twice
+        assert flat["scan.ci_sast_tools"].count("Kusari Inspector") == 1
+
+    def test_flatten_empty_apps(self):
+        """No github_apps produces no scan.github_apps key."""
+        ctx = RepoScanContext()
+        flat = flatten_scan_context(ctx)
+        assert "scan.github_apps" not in flat

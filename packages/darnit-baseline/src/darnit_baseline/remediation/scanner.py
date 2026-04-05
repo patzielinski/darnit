@@ -14,6 +14,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from darnit.core.logging import get_logger
 
@@ -86,6 +87,7 @@ class RepoScanContext:
     code_of_conduct_path: str | None = None
     security_policy_path: str | None = None
     inconsistencies: list[str] = field(default_factory=list)
+    github_apps: list[dict[str, Any]] = field(default_factory=list)
 
 
 # =============================================================================
@@ -150,6 +152,23 @@ ACTION_TOOL_MAP: dict[str, tuple[str, str]] = {
     "actions/attest-build-provenance": ("GitHub Attestation", "signing"),
     # Provenance
     "slsa-framework/slsa-github-generator": ("SLSA Provenance", "provenance"),
+}
+
+#: Map known GitHub App slugs to capabilities they provide.
+#: Each entry is (display_name, list_of_capability_categories).
+APP_CAPABILITY_MAP: dict[str, tuple[str, list[str]]] = {
+    "kusari-inspector": ("Kusari Inspector", ["sast", "sca", "secrets", "license"]),
+    "gittuf-app-beta": ("gittuf", ["signing"]),
+    "snyk": ("Snyk", ["sca", "sast"]),
+    "sonarcloud": ("SonarCloud", ["sast"]),
+    "codecov": ("Codecov", ["coverage"]),
+    "renovate": ("Renovate", ["dependency_updates"]),
+    "dependabot": ("Dependabot", ["dependency_updates", "sca"]),
+    "codesee-app": ("CodeSee", ["architecture"]),
+    "socket-security": ("Socket", ["sca"]),
+    "step-security": ("StepSecurity", ["supply_chain"]),
+    "fossa": ("FOSSA", ["license", "sca"]),
+    "whitesource-bolt": ("Mend", ["sca", "license"]),
 }
 
 #: Package manager detection from lockfile presence.
@@ -270,6 +289,16 @@ def scan_repository(local_path: str) -> RepoScanContext:
 
     # Phase 9 (Polish): inconsistency detection
     ctx.inconsistencies = _scan_inconsistencies(local_path)
+
+    # Phase 10: GitHub Apps detection
+    try:
+        from darnit.core.utils import detect_repo_from_git
+        detected = detect_repo_from_git(local_path)
+        owner = detected.get("owner") if detected else None
+        repo_name = detected.get("repo") if detected else None
+    except Exception:
+        owner = repo_name = None
+    ctx.github_apps = _scan_github_apps(local_path, owner=owner, repo=repo_name)
 
     logger.debug("Repo scan complete: %d languages, %d CI tools detected",
                  len(ctx.languages), sum(len(v) for v in ctx.ci_tools.values()))
@@ -421,6 +450,69 @@ def _scan_ci_workflows(local_path: str) -> dict[str, list[str]]:
         pass
 
     return tools
+
+
+def _scan_github_apps(local_path: str, owner: str | None = None, repo: str | None = None) -> list[dict[str, Any]]:
+    """Detect GitHub Apps installed on the org or repo.
+
+    Tries the org-level installations endpoint first (``/orgs/{owner}/installations``),
+    which returns apps with their slugs and permissions.  Falls back gracefully
+    if the ``gh`` CLI is unavailable or the user lacks permission.
+    """
+    if not owner:
+        # Try to detect owner from git remote
+        try:
+            from darnit.core.utils import detect_repo_from_git
+            detected = detect_repo_from_git(local_path)
+            if detected:
+                owner = detected.get("owner")
+        except Exception:
+            pass
+
+    if not owner:
+        return []
+
+    import json
+    import subprocess
+
+    apps: list[dict[str, Any]] = []
+
+    try:
+        result = subprocess.run(
+            ["gh", "api", f"/orgs/{owner}/installations", "--paginate"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if result.returncode != 0:
+            logger.debug("GitHub Apps API returned %d: %s", result.returncode, result.stderr[:200])
+            return []
+
+        data = json.loads(result.stdout)
+        installations = data.get("installations", [])
+
+        for inst in installations:
+            slug = inst.get("app_slug", "")
+            app_info: dict[str, Any] = {
+                "slug": slug,
+                "name": slug.replace("-", " ").title(),
+                "capabilities": [],
+            }
+
+            # Map known apps to capabilities
+            if slug in APP_CAPABILITY_MAP:
+                display_name, capabilities = APP_CAPABILITY_MAP[slug]
+                app_info["name"] = display_name
+                app_info["capabilities"] = capabilities
+
+            apps.append(app_info)
+
+    except FileNotFoundError:
+        logger.debug("gh CLI not found, skipping GitHub Apps detection")
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception) as e:
+        logger.debug("GitHub Apps detection failed: %s", e)
+
+    return apps
 
 
 def _scan_existing_docs(local_path: str) -> dict[str, DocInfo]:
@@ -624,5 +716,21 @@ def flatten_scan_context(ctx: RepoScanContext) -> dict[str, str]:
     if ctx.inconsistencies:
         formatted = "\n".join(f"- ⚠️ {issue}" for issue in ctx.inconsistencies)
         result["scan.inconsistencies"] = formatted
+
+    # GitHub Apps
+    if ctx.github_apps:
+        app_names = [app["name"] for app in ctx.github_apps]
+        result["scan.github_apps"] = ", ".join(app_names)
+
+        # Merge app capabilities into CI tools categories
+        for app in ctx.github_apps:
+            for cap in app.get("capabilities", []):
+                key = f"scan.ci_{cap}_tools"
+                existing = result.get(key, "")
+                app_name = app["name"]
+                if existing and app_name not in existing:
+                    result[key] = f"{existing}, {app_name}"
+                elif not existing:
+                    result[key] = app_name
 
     return result

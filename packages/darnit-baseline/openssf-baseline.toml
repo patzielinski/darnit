@@ -292,11 +292,15 @@ allow_sieve_hints = true
 type = "string"
 prompt = "What is the security contact for vulnerability reports?"
 hint = "Email address, URL, or reference to SECURITY.md section"
-examples = ["security@example.com", "https://example.com/security", "See SECURITY.md"]
+examples = ["See SECURITY.md"]
 affects = ["OSPS-VM-01.01", "OSPS-VM-02.01", "OSPS-VM-03.01"]
 store_as = "security.contact"
-auto_detect = false
+auto_detect = true
 required = false
+hint_sources = ["SECURITY.md", ".github/SECURITY.md"]
+allow_sieve_hints = true
+# Filter: reject detected values containing "example.com" or "example.org"
+detect_filter = "!value.contains('example.com') && !value.contains('example.org')"
 
 [context.governance_model]
 type = "enum"

@@ -501,6 +501,28 @@ def _apply_declarative_remediation(
         except Exception:
             pass  # Repo scanning is best-effort
 
+        # Load .project/project.yaml for ${project.*} substitution
+        project_values: dict[str, Any] = {}
+        try:
+            import yaml
+            project_yaml = os.path.join(local_path, ".project", "project.yaml")
+            if os.path.isfile(project_yaml):
+                with open(project_yaml, encoding="utf-8") as f:
+                    raw = yaml.safe_load(f) or {}
+                # Flatten nested keys: {security: {contact: "x"}} -> {"security.contact": "x"}
+                def _flatten(d: dict, prefix: str = "") -> dict[str, str]:
+                    out: dict[str, str] = {}
+                    for k, v in d.items():
+                        key = f"{prefix}{k}" if not prefix else f"{prefix}.{k}"
+                        if isinstance(v, dict):
+                            out.update(_flatten(v, key))
+                        elif v is not None:
+                            out[key] = str(v) if not isinstance(v, list) else " ".join(str(i) for i in v)
+                    return out
+                project_values = _flatten(raw)
+        except Exception:
+            pass  # Project YAML loading is best-effort
+
         # Create executor with templates and context
         executor = RemediationExecutor(
             local_path=local_path,
@@ -509,6 +531,7 @@ def _apply_declarative_remediation(
             templates=templates or {},
             context_values=context_values,
             scan_values=scan_values,
+            project_values=project_values,
             framework_path=fw_path,
         )
 
