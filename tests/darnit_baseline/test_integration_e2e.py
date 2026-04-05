@@ -64,8 +64,9 @@ class TestRemediationE2EFlow:
         assert (Path(temp_git_repo) / "GOVERNANCE.md").exists()
 
         content = (Path(temp_git_repo) / "GOVERNANCE.md").read_text()
-        assert "@alice" in content
-        assert "@bob" in content
+        # GOVERNANCE.md should reference MAINTAINERS.md, not embed names
+        assert "MAINTAINERS.md" in content
+        assert "CODEOWNERS" in content
 
     @pytest.mark.integration
     def test_security_policy_creates_security_md(self, temp_git_repo):

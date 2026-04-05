@@ -2124,18 +2124,22 @@ steps = [
 ]
 
 [controls."OSPS-AC-04.01".remediation]
-safe = false
-dry_run_supported = false
+safe = true
+dry_run_supported = true
 
 [[controls."OSPS-AC-04.01".remediation.handlers]]
-handler = "manual"
-steps = [
-    "Add a top-level 'permissions: {}' block to each workflow in .github/workflows/",
-    "Grant only the specific permissions each job needs (e.g., contents: read)",
-    "See GitHub's documentation for available permission scopes",
-]
-docs_url = "https://docs.github.com/en/actions/using-jobs/assigning-permissions-to-jobs"
-context_hints = ["ci.provider"]
+handler = "yaml_inject"
+files = ".github/workflows/*.yml"
+key = "permissions"
+value = "{}"
+insert_after = "on"
+
+[[controls."OSPS-AC-04.01".remediation.handlers]]
+handler = "yaml_inject"
+files = ".github/workflows/*.yaml"
+key = "permissions"
+value = "{}"
+insert_after = "on"
 
 # =============================================================================
 # Level 2 Controls - Governance (GV)

@@ -198,21 +198,32 @@ class RemediationExecutor:
     def _substitute(self, text: str, control_id: str) -> str:
         """Substitute variables in text.
 
-        Handles both $VAR and ${...} patterns.
-        Unresolved ${...} references are replaced with empty string.
+        Handles $VAR, ${var}, and ${var|default} patterns.
+        For ${var|default}: uses the resolved value if available, otherwise
+        the default. Unresolved ${var} with no default becomes empty string.
         """
         import re
 
         substitutions = self._get_substitutions(control_id)
+        # Build a lookup from bare variable names to values
+        # e.g. "scan.ci_sast_tools" -> "CodeQL" from "${scan.ci_sast_tools}"
+        var_lookup: dict[str, str] = {}
+        for var, value in substitutions.items():
+            if var.startswith("${") and var.endswith("}") and value:
+                bare = var[2:-1]  # strip ${ and }
+                var_lookup[bare] = value
+
         result = text
 
-        # First: resolve ${...} patterns (more specific, match first)
-        for var, value in substitutions.items():
-            if var.startswith("${") and value:
-                result = result.replace(var, value)
+        # Resolve all ${...} patterns (with or without |default fallback)
+        def _resolve_var(match: re.Match) -> str:
+            inner = match.group(1)
+            parts = inner.split("|", 1)
+            var_name = parts[0]
+            default = parts[1] if len(parts) == 2 else ""
+            return var_lookup.get(var_name, default)
 
-        # Replace any remaining unresolved ${...} with empty string
-        result = re.sub(r"\$\{[^}]+\}", "", result)
+        result = re.sub(r"\$\{([^}]+)\}", _resolve_var, result)
 
         # Then: resolve standard $VAR patterns
         for var, value in substitutions.items():
