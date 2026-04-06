@@ -944,7 +944,7 @@ handler = "exec"
 command = ["gh", "release", "list", "--json", "tagName", "--limit", "10"]
 pass_exit_codes = [0]
 output_format = "json"
-expr = 'size(output.json) > 0'
+expr = 'size(output.json) > 0 && output.json[0].tagName.matches("^v?[0-9]")'
 timeout = 30
 
 [[controls."OSPS-BR-02.01".passes]]
@@ -1612,7 +1612,7 @@ handler = "exec"
 command = ["gh", "release", "view", "--json", "body,assets"]
 pass_exit_codes = [0]
 output_format = "json"
-expr = 'output.json.body != ""'
+expr = 'output.json.body.matches("(?i)(licen[cs]e|apache|mit\\s|bsd|gpl|mpl|isc|unlicense)") || output.json.assets.exists(a, a.name.matches("(?i)^(license|copying|notice)"))'
 timeout = 30
 
 [[controls."OSPS-LE-02.02".passes]]
@@ -1979,13 +1979,13 @@ help_md = """Remove unreviewable binary files from repository.
 
 [[controls."OSPS-QA-05.02".passes]]
 handler = "pattern"
-exclude_files = ["**/*.jar", "**/*.war", "**/*.pyc", "**/*.class", "**/*.o"]
+exclude_files = ["**/*.jar", "**/*.war", "**/*.pyc", "**/*.class", "**/*.o", "**/*.exe", "**/*.dll", "**/*.so", "**/*.dylib", "**/*.whl", "**/*.egg", "**/*.bin", "**/*.db", "**/*.sqlite"]
 expr = 'output.files_found == 0'
 
 [[controls."OSPS-QA-05.02".passes]]
 handler = "manual"
 steps = [
-    "Search repository for binary artifacts (.jar, .war, .pyc, .class)",
+    "Search repository for binary artifacts (.jar, .war, .pyc, .class, .exe, .dll, .so, .whl)",
     "Verify no unreviewable binaries are committed",
     "Check that build artifacts are in .gitignore",
 ]
@@ -2712,7 +2712,7 @@ handler = "exec"
 command = ["gh", "release", "list", "--json", "tagName,assets", "--limit", "5"]
 pass_exit_codes = [0]
 output_format = "json"
-expr = 'size(output.json) > 0 && size(output.json[0].assets) > 0'
+expr = 'output.json.exists(r, size(r.assets) > 0)'
 timeout = 30
 
 [[controls."OSPS-BR-02.02".passes]]
