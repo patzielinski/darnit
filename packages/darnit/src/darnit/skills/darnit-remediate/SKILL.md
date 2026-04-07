@@ -36,20 +36,23 @@ This single call creates the branch, applies all remediations, and commits. Do N
 
 ### 3. Review generated files (quality check)
 
-Read the generated files and check for obvious issues:
+Read the generated files. The templates are designed to produce correct output — trust them.
 
-- Broken syntax (e.g., malformed YAML, invalid workflow expressions)
-- Placeholder values that were not substituted (e.g., leftover `${...}` tokens)
-- Files that are clearly wrong for this project type
+**Fix ONLY these issues:**
+- Broken syntax (malformed YAML, unclosed brackets, invalid workflow expressions)
+- Unsubstituted `${...}` placeholder tokens that should have been filled in
+- Factual contradictions within a single file (e.g., a section header says X but the body says the opposite)
 
-**Rules for this step:**
-- Only use confirmed context from `.project/project.yaml` for project-specific values (maintainers, contacts, governance, etc.)
-- Do NOT scrape names, emails, or other values from existing repo files (SECURITY.md, CODEOWNERS, git history, etc.)
-- Do NOT add content beyond what the templates produced — the templates already use `${context.*}` and `${scan.*}` variables
-- If a template produced reasonable output, leave it alone
-- Only fix clear errors, not style preferences
+**Do NOT change:**
+- Tool or product names (e.g., Kusari Inspector references are correct — NEVER replace with CodeQL, Dependabot, etc.)
+- Scanning frequencies, severity thresholds, or timeline values
+- Policy content, process descriptions, or remediation steps
+- Generic phrasing — do NOT "enhance" by injecting specific names, emails, or details from the repo. "Contact the maintainers" is fine as-is; changing it to "Contact Alice and Bob" adds nothing.
+- Style preferences (wording, formatting, section order)
 
-If any files were fixed, make a new commit describing the specific fixes.
+**The test for whether a change is justified:** Would a wrong value here cause someone to do the wrong thing or break a CI pipeline? If no, leave it alone.
+
+If any files needed syntax fixes, make a new commit describing the specific fixes. If everything is clean (which is the expected case), say so and move on.
 
 ### 4. Offer PR creation
 
