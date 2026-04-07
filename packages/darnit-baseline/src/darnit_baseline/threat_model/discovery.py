@@ -30,6 +30,11 @@ from .patterns import (
     SOURCE_EXTENSIONS,
 )
 
+# Directories that contain pattern definitions rather than application code.
+# Scanning these produces false positives (e.g. detecting "fastapi" from a
+# regex string literal that *defines* the fastapi detection pattern).
+_META_DIRECTORIES = {"threat_model", "threat-model"}
+
 logger = get_logger("threat_model.discovery")
 
 
@@ -66,7 +71,10 @@ def detect_frameworks(local_path: str) -> list[str]:
             elif pattern:
                 # Search for pattern in source files
                 for root, dirs, files in os.walk(local_path):
-                    dirs[:] = [d for d in dirs if d not in SKIP_DIRECTORIES]
+                    dirs[:] = [
+                        d for d in dirs
+                        if d not in SKIP_DIRECTORIES and d not in _META_DIRECTORIES
+                    ]
                     for fn in files:
                         if fn.endswith(SOURCE_EXTENSIONS):
                             filepath = os.path.join(root, fn)

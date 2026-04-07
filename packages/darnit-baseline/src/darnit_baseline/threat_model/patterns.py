@@ -348,7 +348,8 @@ DATASTORE_PATTERNS: dict[str, dict[str, Any]] = {
 # Directories to skip during scanning
 SKIP_DIRECTORIES = [
     'node_modules', '.git', 'venv', '__pycache__',
-    '.next', 'dist', 'build', '.venv', 'env'
+    '.next', 'dist', 'build', '.venv', 'env',
+    'tests', 'test', '__tests__', 'fixtures', 'test_data',
 ]
 
 

@@ -34,16 +34,22 @@ Call `remediate_audit_findings` with:
 
 This single call creates the branch, applies all remediations, and commits. Do NOT make separate calls to `create_remediation_branch` or `commit_remediation_changes`.
 
-### 3. Enhance generated files (value-add)
+### 3. Review generated files (quality check)
 
-This is where the skill adds unique value beyond what the tool provides. Read the generated template files and improve them with project-specific content:
+Read the generated files and check for obvious issues:
 
-- Read each generated file (e.g., SECURITY.md, CONTRIBUTING.md, docs/*.md)
-- Enhance with real project details: actual maintainer names, real security contact, specific CI/CD details
-- Improve language, formatting, and completeness
-- Make templates feel like real documentation rather than boilerplate
+- Broken syntax (e.g., malformed YAML, invalid workflow expressions)
+- Placeholder values that were not substituted (e.g., leftover `${...}` tokens)
+- Files that are clearly wrong for this project type
 
-If any files were enhanced, make a new commit with the improvements.
+**Rules for this step:**
+- Only use confirmed context from `.project/project.yaml` for project-specific values (maintainers, contacts, governance, etc.)
+- Do NOT scrape names, emails, or other values from existing repo files (SECURITY.md, CODEOWNERS, git history, etc.)
+- Do NOT add content beyond what the templates produced — the templates already use `${context.*}` and `${scan.*}` variables
+- If a template produced reasonable output, leave it alone
+- Only fix clear errors, not style preferences
+
+If any files were fixed, make a new commit describing the specific fixes.
 
 ### 4. Offer PR creation
 
