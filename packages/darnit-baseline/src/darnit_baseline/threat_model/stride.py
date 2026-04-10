@@ -16,6 +16,7 @@ from darnit.core.logging import get_logger
 from .models import (
     AssetInventory,
     CodeLocation,
+    Confidence,
     RiskLevel,
     RiskScore,
     StrideCategory,
@@ -145,6 +146,15 @@ def analyze_stride_threats(
     """
     threats = []
     threat_id = 0
+
+    # Log low-confidence findings that will be excluded from threat generation.
+    low_stores = [ds for ds in assets.data_stores if ds.confidence == Confidence.LOW]
+    if low_stores:
+        techs = ", ".join(ds.technology for ds in low_stores)
+        logger.info(
+            "Skipping %d low-confidence data store(s) from STRIDE analysis: %s",
+            len(low_stores), techs,
+        )
 
     # Analyze each entry point
     for ep in assets.entry_points:
@@ -476,8 +486,12 @@ def identify_control_gaps(
             "affected": [ep.id for ep in unauthenticated]
         })
 
-    # Check for missing auth mechanisms
-    if assets.entry_points and not assets.authentication:
+    # Check for missing auth mechanisms (only count confident detections)
+    confident_auth = [
+        am for am in assets.authentication
+        if am.confidence != Confidence.LOW
+    ]
+    if assets.entry_points and not confident_auth:
         gaps.append({
             "control": "Authentication Framework",
             "gap": "No authentication framework detected",
