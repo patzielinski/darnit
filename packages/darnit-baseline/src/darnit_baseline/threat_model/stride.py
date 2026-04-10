@@ -283,6 +283,8 @@ def analyze_stride_threats(
         category = StrideCategory.TAMPERING
         if sink["type"] == "xss":
             category = StrideCategory.INFORMATION_DISCLOSURE
+        elif sink["type"] == "template_injection":
+            category = StrideCategory.TAMPERING
         elif sink["type"] in ["sql_injection", "command_injection", "code_injection"]:
             category = StrideCategory.ELEVATION_OF_PRIVILEGE
 

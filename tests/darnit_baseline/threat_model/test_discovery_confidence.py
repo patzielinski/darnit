@@ -496,6 +496,133 @@ class TestSensitiveDataFiltering:
         pii = [d for d in data if d.data_type == "pii"]
         assert len(pii) >= 1
 
+    def test_regex_group_extraction_not_flagged(self, tmp_repo):
+        """Extracting email from regex match is metadata parsing, not PII."""
+        _write(tmp_repo, "parser.py", """\
+            import re
+            match = re.match(r"(.+?)\\s*<(.+?)>", line)
+            if match:
+                name = match.group(1).strip()
+                email = match.group(2).strip()
+        """)
+        data = discover_sensitive_data(str(tmp_repo))
+        pii = [d for d in data if d.data_type == "pii"]
+        assert len(pii) == 0, (
+            f"Regex extraction flagged as PII: {[(d.field_name, d.context) for d in pii]}"
+        )
+
+    def test_type_comparison_not_flagged(self, tmp_repo):
+        """Type branching on field name (== 'email') is not PII handling."""
+        _write(tmp_repo, "validator.py", """\
+            def validate(value, ctx_type):
+                if ctx_type == "email":
+                    return "@" in value
+                elif ctx_type == "phone":
+                    return value.isdigit()
+        """)
+        data = discover_sensitive_data(str(tmp_repo))
+        pii = [d for d in data if d.data_type == "pii"]
+        assert len(pii) == 0, (
+            f"Type comparison flagged as PII: {[(d.field_name, d.context) for d in pii]}"
+        )
+
+    def test_dataclass_empty_default_not_flagged(self, tmp_repo):
+        """Dataclass field with empty default is schema, not PII handling."""
+        _write(tmp_repo, "models.py", """\
+            from dataclasses import dataclass
+
+            @dataclass
+            class Contact:
+                email: str = ""
+                phone: str = None
+        """)
+        data = discover_sensitive_data(str(tmp_repo))
+        pii = [d for d in data if d.data_type == "pii"]
+        assert len(pii) == 0, (
+            f"Dataclass default flagged as PII: {[(d.field_name, d.context) for d in pii]}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Template injection detection
+# ---------------------------------------------------------------------------
+
+class TestTemplateInjectionDetection:
+    def test_jinja2_from_string_detected(self, tmp_repo):
+        """Jinja2 from_string() with user input should be detected."""
+        _write(tmp_repo, "app.py", """\
+            from flask import request
+            import jinja2
+            def render(request):
+                user_template = request.form["template"]
+                env = jinja2.Environment()
+                result = env.from_string(user_template).render()
+        """)
+        sinks = discover_injection_sinks(str(tmp_repo))
+        template = [s for s in sinks if s["type"] == "template_injection"]
+        assert len(template) > 0
+        assert template[0]["has_user_input"] is True
+
+    def test_jinja2_from_string_no_user_input(self, tmp_repo):
+        """Jinja2 from_string() with static template has no taint."""
+        _write(tmp_repo, "renderer.py", """\
+            import jinja2
+            def render_static():
+                env = jinja2.Environment()
+                tpl = env.from_string("Hello {{ name }}")
+                return tpl.render(name="world")
+        """)
+        sinks = discover_injection_sinks(str(tmp_repo))
+        template = [s for s in sinks if s["type"] == "template_injection"]
+        # Sink detected but without user-input taint
+        if template:
+            assert template[0]["has_user_input"] is False
+
+    def test_render_template_string_detected(self, tmp_repo):
+        """Flask render_template_string with user input should be detected."""
+        _write(tmp_repo, "app.py", """\
+            from flask import request, render_template_string
+            def render(request):
+                body = request.form["body"]
+                return render_template_string(body)
+        """)
+        sinks = discover_injection_sinks(str(tmp_repo))
+        template = [s for s in sinks if s["type"] == "template_injection"]
+        assert len(template) > 0
+        assert template[0]["has_user_input"] is True
+
+
+# ---------------------------------------------------------------------------
+# Python path traversal detection
+# ---------------------------------------------------------------------------
+
+class TestPythonPathTraversalDetection:
+    def test_os_path_join_with_user_input(self, tmp_repo):
+        """os.path.join with request input should be detected."""
+        _write(tmp_repo, "handler.py", """\
+            import os
+            def download(request):
+                filename = request.args["file"]
+                full_path = os.path.join("/uploads", filename)
+                return open(full_path).read()
+        """)
+        sinks = discover_injection_sinks(str(tmp_repo))
+        path = [s for s in sinks if s["type"] == "path_traversal"]
+        assert len(path) > 0
+        assert path[0]["has_user_input"] is True
+
+    def test_os_path_join_with_literals_no_taint(self, tmp_repo):
+        """os.path.join with only literal strings has no user-input taint."""
+        _write(tmp_repo, "config.py", """\
+            import os
+            base = os.path.join("/etc", "myapp", "config.yml")
+        """)
+        sinks = discover_injection_sinks(str(tmp_repo))
+        path = [s for s in sinks if s["type"] == "path_traversal"]
+        # The pattern matches variables too, but no taint
+        for s in path:
+            assert s["has_user_input"] is False
+
 
 # ---------------------------------------------------------------------------
 # Self-scan: run against the darnit repo itself
@@ -549,6 +676,21 @@ class TestSelfScan:
             f"SSRF false positives: {[(s['file'], s['line']) for s in ssrf]}"
         )
 
+    def test_no_pii_from_metadata_parsing(self, repo_root):
+        """Git metadata parsing and type branching should not be flagged as PII."""
+        data = discover_sensitive_data(repo_root)
+        pii = [d for d in data if d.data_type == "pii"]
+        metadata_fps = [
+            d for d in pii
+            if "match.group" in d.context
+            or "ctx_type ==" in d.context
+            or "== \"email\"" in d.context
+        ]
+        assert len(metadata_fps) == 0, (
+            f"False positive PII from metadata/type-checking code: "
+            f"{[(d.file, d.line, d.context) for d in metadata_fps]}"
+        )
+
     def test_no_injection_threats_from_self_scan(self, repo_root):
         """Self-scan should produce zero injection threats (no user-facing endpoints)."""
         from darnit_baseline.threat_model.discovery import discover_all_assets
@@ -560,6 +702,7 @@ class TestSelfScan:
             if "injection" in t.title.lower()
             or "ssrf" in t.title.lower()
             or "xss" in t.title.lower()
+            or "template" in t.title.lower()
         ]
         assert len(injection_threats) == 0, (
             f"False positive injection threats from self-scan: "

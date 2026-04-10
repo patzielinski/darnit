@@ -242,6 +242,10 @@ INJECTION_PATTERNS: dict[str, dict[str, Any]] = {
             r"open\s*\(.*\+.*['\"]r",
             r"path\.join\s*\(.*req\.",
             r"fs\..*\(.*req\.",
+            # Python: os.path.join with variable (not just literal strings)
+            r"os\.path\.join\s*\(.*,\s*(?![\"\'])[\w\.]+",
+            # Python: open() with string concatenation or format
+            r"open\s*\(.*(?:\+|\.format\(|f['\"])",
         ],
         "severity": "high",
         "cwe": "CWE-22",
@@ -258,6 +262,21 @@ INJECTION_PATTERNS: dict[str, dict[str, Any]] = {
         "severity": "high",
         "cwe": "CWE-918",
         "recommendation": "Validate URLs against allowlist, block internal IPs"
+    },
+    "template_injection": {
+        "patterns": [
+            # Jinja2: rendering user-controlled strings as templates
+            r"\.from_string\s*\(",
+            r"render_template_string\s*\(",
+            r"jinja2\.Template\s*\(",
+            # Mako
+            r"mako\.template\.Template\s*\(",
+            # Django: mark_safe with user input (also XSS, but template-flavored)
+            r"Template\s*\(.*\)\.render\s*\(",
+        ],
+        "severity": "high",
+        "cwe": "CWE-1336",
+        "recommendation": "Use sandboxed template environments; pass variables via context dicts, never concatenate user input into template source"
     },
     "code_injection": {
         "patterns": [

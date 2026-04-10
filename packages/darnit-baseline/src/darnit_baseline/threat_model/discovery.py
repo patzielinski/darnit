@@ -44,6 +44,18 @@ from .patterns import (
 # regex string literal that *defines* the fastapi detection pattern).
 _META_DIRECTORIES = {"threat_model", "threat-model"}
 
+# Patterns that indicate a PII field-name match is NOT actual PII handling.
+# These catch common false positives: metadata parsing, type branching,
+# schema defaults — not real user-data processing.
+_PII_FALSE_POSITIVE_PATTERNS = [
+    # Regex group extraction: email = match.group(2).strip()
+    re.compile(r"=\s*\w+\.group\("),
+    # Type/string comparison: ctx_type == "email", == 'phone'
+    re.compile(r"[!=]=\s*['\"]"),
+    # Dataclass field with empty/None default: email: str = ""
+    re.compile(r":\s*str\s*=\s*(?:['\"]['\"]|None)"),
+]
+
 logger = get_logger("threat_model.discovery")
 
 
@@ -528,16 +540,23 @@ def discover_sensitive_data(local_path: str) -> list[SensitiveData]:
                         matches = re.findall(pattern, line, re.IGNORECASE)
                         for match in matches:
                             field_name = match if isinstance(match, str) else match[0] if match else ""
-                            if field_name:
-                                data_id += 1
-                                sensitive_data.append(SensitiveData(
-                                    id=f"SD-{data_id:03d}",
-                                    data_type=data_type,
-                                    field_name=field_name,
-                                    file=rel_path,
-                                    line=line_no,
-                                    context=line.strip()[:100]
-                                ))
+                            if not field_name:
+                                continue
+                            # Filter out common false positives for PII fields:
+                            # regex group extraction, type comparisons, empty defaults.
+                            if data_type == "pii" and any(
+                                fp.search(line) for fp in _PII_FALSE_POSITIVE_PATTERNS
+                            ):
+                                continue
+                            data_id += 1
+                            sensitive_data.append(SensitiveData(
+                                id=f"SD-{data_id:03d}",
+                                data_type=data_type,
+                                field_name=field_name,
+                                file=rel_path,
+                                line=line_no,
+                                context=line.strip()[:100]
+                            ))
 
     return sensitive_data
 
