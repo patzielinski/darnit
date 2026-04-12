@@ -41,6 +41,22 @@ A full compliance pipeline run (`/darnit-comply`) against darnit's own repositor
 
 The following requirements, success criteria, and clarifications address these gaps. Changes are additive — no existing FR or SC is removed, only strengthened or supplemented.
 
+### Session 2026-04-12 — LLM Consultation Loop for Remediation Handlers
+
+A manual walkthrough of the `/darnit-remediate` flow against darnit's own repository confirmed that the structural pipeline produces a high-quality draft, but the generated `THREAT_MODEL.md` still contained one false positive (opengrep_runner.py:131 — fully hardcoded args flagged as command injection) and three findings that were technically true but already mitigated by allowlist checks without any annotation. The calling agent (Claude, running the skill) manually:
+
+1. Read each HIGH/MEDIUM finding and cross-referenced it against the source code
+2. Removed the false positive
+3. Added "**Mitigation in place:**" notes to findings with existing defenses
+4. Flagged a genuinely unmitigated finding (server/registry.py:151 — dynamic import without allowlist check)
+5. Updated the executive summary counts
+
+This manual step is exactly what the `llm_consultation` payload already describes — but the skill didn't act on it. The payload was surfaced in the MCP output, the instructions were clear, but no skill told the agent to follow them.
+
+**Resolution**: The `llm_consultation` evidence field is a **generic protocol**, not threat-model-specific. Any remediation handler can return `evidence["llm_consultation"]` with structured review instructions. The skill layer must treat this as a mandatory post-remediation step: when the MCP tool returns consultation payloads, the agent follows them before offering to commit or create a PR. This applies to all skills that call `remediate_audit_findings` — not just `/darnit-remediate` but also `/darnit-comply`.
+
+**Spec impact**: This changes the "Out of Scope" claim that skill changes aren't needed. The skill layer needs a generic rule: "when any remediation result includes `llm_consultation`, follow its instructions." The handler contract and MCP tool surface remain unchanged — the consultation payload is already there, it just needs a consumer.
+
 ## Problem
 
 The current discovery pipeline in `packages/darnit-baseline/src/darnit_baseline/threat_model/discovery.py` uses regex patterns to identify entry points, data stores, injection sinks, authentication mechanisms, and sensitive data. Regex cannot distinguish code structure from string content, and 5–6 iteration cycles of patching specific false positives have failed to produce trustworthy output. Concrete failures observed when the current pipeline ran against darnit itself:
@@ -231,7 +247,7 @@ Every finding in the generated draft includes a file path, a line number, a sour
 
 - Finding fingerprinting, triage memory, and suppression mechanisms. The handler is stateless in v1; users preserve triage edits via the default skip-if-exists behavior and override intentionally when they want to regenerate.
 - Changes to the MCP tool surface. The existing `generate_threat_model` tool and the OSPS-SA-03.02 remediation handler keep the same names, arguments, and return shapes.
-- Changes to the `darnit-remediate` skill. The skill's existing instructions to review generated files cover this case.
+- ~~Changes to the `darnit-remediate` skill.~~ *(Moved in-scope per 2026-04-12 LLM consultation session.)* The skill now has a generic rule to follow `llm_consultation` payloads returned by any remediation handler. This is a skill-layer change, not a framework change.
 - Changes to the sieve orchestrator, handler registry, or plugin protocol. This is a discovery-layer rewrite confined to `packages/darnit-baseline/src/darnit_baseline/threat_model/`.
 - Cross-function (inter-procedural) taint analysis. Opengrep's `--taint-intrafile` flag is documented but unreleased in 1.6.0; intra-procedural taint is sufficient for v1.
 - Structural scanning for languages outside {Python, JavaScript, TypeScript, Go, YAML}. TOML parsing is limited to dependency manifests (`pyproject.toml`, `package.json`).
