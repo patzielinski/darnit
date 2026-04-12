@@ -43,7 +43,7 @@ Enums identifying the *shape* of a discovered asset. Used for STRIDE mapping and
 ```python
 class EntryPointKind(str, Enum):
     HTTP_ROUTE = "http_route"          # fastapi, flask, express, go http.Handle
-    MCP_TOOL = "mcp_tool"              # @server.tool / register_tool
+    MCP_TOOL = "mcp_tool"              # @server.tool() decorator OR server.add_tool() imperative call
     CLI_COMMAND = "cli_command"        # click/argparse/cobra entry
     MESSAGE_HANDLER = "message_handler"  # queue consumer, webhook (future)
 
@@ -82,6 +82,12 @@ class DiscoveredEntryPoint:
 - `framework` MUST be set when `kind in {HTTP_ROUTE, MCP_TOOL}`. `CLI_COMMAND` and `MESSAGE_HANDLER` may leave `framework=None`.
 - `route_path` is set when `framework in {"fastapi", "flask", "express"}` (documentation contract, not enforced programmatically).
 - `source_query` is the string id of the query in `queries/<language>.py` that produced the match.
+
+**Registration pattern coverage** *(added 2026-04-12)*: `MCP_TOOL` entry points may be discovered via two distinct code patterns:
+1. **Decorator**: `@server.tool()` / `@mcp.tool()` — matched by the `MCP_TOOL_DECORATOR` tree-sitter query.
+2. **Imperative**: `server.add_tool(handler, name=..., ...)` — matched by a new `MCP_TOOL_IMPERATIVE` tree-sitter query. The `name` keyword argument provides the tool name; the `handler` argument provides the function reference for call-graph linkage.
+
+Both patterns produce `DiscoveredEntryPoint` instances with `kind=MCP_TOOL, framework="mcp"`. The `source_query` field distinguishes which pattern was matched. Analogous decorator/imperative pairs exist for `HTTP_ROUTE` (e.g., `@app.route()` vs `app.add_url_rule()`) and should be added as coverage gaps are discovered.
 
 **Lifecycle**: Produced by `discovery.discover_entry_points()`. Consumed by `stride.py` (for Spoofing and EoP candidate generation) and `generators.py` (for the Asset Inventory section).
 

@@ -261,6 +261,52 @@ All paths are absolute. Relative paths are rooted at `/Users/mlieberman/Projects
 
 ---
 
+## Phase 9: Retrospective Fixes (2026-04-12)
+
+**Purpose**: Address gaps found when dogfooding the generated `THREAT_MODEL.md` against darnit itself. The v1 implementation produced a shallow draft: empty asset inventory, 28 identical subprocess findings, 5 of 6 STRIDE categories empty. These tasks close the gap between "tests pass on fixtures" and "useful output on real codebases."
+
+**Prerequisite**: Phase 8 complete (all prior tasks done).
+
+### Imperative entry point detection (FR-001a)
+
+- [ ] T101 Add tree-sitter query `MCP_TOOL_IMPERATIVE` to `queries/python.py` matching `server.add_tool(handler, name=..., ...)` and `mcp.add_tool(...)` imperative call patterns. The query MUST capture the handler argument (for call-graph linkage), the `name` keyword argument (for tool naming), and the whole call expression. Test against a new fixture
+- [ ] T102 [P] Add tree-sitter query `HTTP_ROUTE_IMPERATIVE` to `queries/python.py` matching `app.add_url_rule(rule, endpoint, view_func)` and `router.add_route(path, handler)` patterns. Test against a new fixture
+- [ ] T103 [P] Create fixture `tests/darnit_baseline/threat_model/fixtures/mcp_server_imperative/server.py` — a minimal MCP server that registers tools via `server.add_tool()` (no decorators). Expected discovery: 2+ MCP_TOOL entry points with framework="mcp" and `source_query="MCP_TOOL_IMPERATIVE"`
+- [ ] T104 Wire `MCP_TOOL_IMPERATIVE` into `ts_discovery.py`'s entry-point extraction. When matched, produce `DiscoveredEntryPoint(kind=MCP_TOOL, framework="mcp", source_query="MCP_TOOL_IMPERATIVE", ...)`
+- [ ] T105 [P] In `test_ts_discovery.py`, add `test_imperative_mcp_registration_detected` using the T103 fixture. Assert entry points are found with correct kind, framework, and source_query
+- [ ] T106 [P] In `test_ts_discovery.py`, add `test_imperative_http_route_detected` using a new fixture with `app.add_url_rule()`. Assert entry points are found
+
+### Empty asset inventory diagnostic (FR-001b)
+
+- [ ] T107 In `ts_discovery.py::discover_all`, after discovery completes, if `len(entry_points) == 0` and `file_scan_stats.in_scope_files > 50`, emit a `logger.warning(...)` with the diagnostic message from FR-001b
+- [ ] T108 In `ts_generators.py::_render_asset_inventory`, when entry points list is empty and `file_scan_stats.in_scope_files > 50`, render the diagnostic warning note instead of the bare "No HTTP route handlers detected" text
+- [ ] T109 [P] In `test_ts_discovery.py`, add `test_empty_inventory_warning_on_large_repo` that runs discovery against a fixture with 60+ Python files but no recognized entry-point patterns. Assert the warning is logged (use `caplog`)
+
+### Subprocess finding differentiation (FR-004a)
+
+- [ ] T110 In `queries/python.py`, update the post-processing for `DANGEROUS_ATTRIBUTE_CALL` to classify each `subprocess.run()` match into one of three tiers based on argument shape: (a) STATIC — first argument is a list literal where all elements are string literals, (b) PARAMETERIZED — first argument is a list containing at least one non-literal element (variable, f-string, call), (c) DYNAMIC — first argument is a bare variable or call expression. Store the tier as a field on the finding
+- [ ] T111 In `ranking.py`, adjust the severity × confidence heuristic so that STATIC subprocess calls score severity=1, confidence=0.2 (INFO-level, likely filtered by cap); PARAMETERIZED calls score severity=3, confidence=0.6; DYNAMIC calls score severity=6, confidence=0.8. These replace the current flat severity=1.8 for all subprocess findings
+- [ ] T112 [P] In `test_ranking.py`, add `test_subprocess_tiered_scoring` with three synthetic findings (one per tier). Assert STATIC < PARAMETERIZED < DYNAMIC in final score and that STATIC findings would be excluded by a cap of 10 when higher-tier findings exist
+- [ ] T113 [P] In `test_ts_discovery.py`, add `test_subprocess_tiers_on_darnit_repo` that runs discovery against the actual darnit repo (using the real `packages/` directory as target). Assert that: (a) at least one STATIC finding exists (e.g., `["git", "init"]`), (b) at least one DYNAMIC finding exists (e.g., `resolved_cmd` in `builtin_handlers.py`), (c) their scores differ. This is the SC-001b regression test
+
+### TOML-driven command construction detection (FR-004b)
+
+- [ ] T114 Add a heuristic to `ts_discovery.py` that flags subprocess calls where the command argument variable is assigned from a dict/config lookup within the same function scope. Implementation: for each DYNAMIC-tier subprocess finding, walk the enclosing function's AST for assignment statements where the RHS is a subscript expression (dict access) or a method call on a dict-like object (`.get()`, `.items()`). If found, elevate the finding's confidence to 0.9 and add a note to the rationale
+- [ ] T115 [P] Create fixture `tests/darnit_baseline/threat_model/fixtures/config_driven_subprocess/app.py` — a function that reads command parts from a config dict and passes them to `subprocess.run()`. Expected: one DYNAMIC finding with elevated confidence
+- [ ] T116 [P] In `test_ts_discovery.py`, add `test_config_driven_subprocess_elevated` using the T115 fixture. Assert the finding has confidence >= 0.9 and the rationale mentions config-driven construction
+
+### Self-scan dogfood validation (SC-001a, SC-001b, SC-009)
+
+- [ ] T117 In `test_ts_discovery.py`, add `test_self_scan_finds_entry_points` (SC-001a): run `discover_all` against the actual repo root. Assert `len(entry_points) >= 5`. This test MUST NOT be skipped in CI — it is the primary integration test for the feature
+- [ ] T118 [P] In `test_ts_discovery.py`, add `test_self_scan_stride_coverage` (SC-009): run `discover_all` and build the STRIDE mapping against the actual repo. Assert at least 3 of 6 STRIDE categories contain findings
+- [ ] T119 [P] In `test_ts_discovery.py`, add `test_self_scan_subprocess_differentiation` (SC-001b): run `discover_all` against the actual repo. Collect all subprocess findings. Assert `max(scores) > min(scores)` — i.e., not all scores are identical
+
+### Fixture-reality alignment (SC-002a)
+
+- [ ] T120 Add the T103 `mcp_server_imperative` fixture to the SC-002 curated fixture suite. Update the `test_curated_fixture_90pct_recall` test to include it in the expected-risk count
+
+---
+
 ## Dependencies & Execution Order
 
 ### Phase dependencies
@@ -273,6 +319,7 @@ All paths are absolute. Relative paths are rooted at `/Users/mlieberman/Projects
 - **Phase 6 (US3)**: Depends on Phase 2. Can run in parallel with Phase 5 once Phase 3 is done.
 - **Phase 7 (cross-cutting)**: Depends on Phases 3, 5, 6 being complete (needs the discovery pipeline, generators, and Opengrep integration all in place).
 - **Phase 8 (Polish)**: Depends on Phase 7 being complete.
+- **Phase 9 (Retrospective Fixes)**: Depends on Phase 8. Addresses gaps found during real-world dogfooding.
 
 ### User story dependencies
 
@@ -339,5 +386,7 @@ This slice does not yet have Opengrep taint enrichment (US3, P2) or the full ver
 5. **Phase 6 (US3)**: Ship Opengrep enrichment. Users with Opengrep installed see taint-flow findings. *Enhancement.*
 6. **Phase 7 (cross-cutting)**: Ship shallow mode, STRIDE mapping, attack chains, and the `patterns.py` deletion. *Completeness.*
 7. **Phase 8 (Polish)**: Docs, lint, dogfood verification, spec sync. *Quality gates.*
+
+8. **Phase 9 (Retrospective Fixes)**: Ship imperative registration detection, subprocess differentiation, empty-inventory diagnostics, and self-scan validation. *Closes the gap between "tests pass" and "useful output on real codebases."*
 
 Each phase leaves the repo in a shippable state (tests pass, control passes, no regressions).

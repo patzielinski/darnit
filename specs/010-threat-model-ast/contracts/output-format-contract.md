@@ -36,6 +36,8 @@ Every draft **MUST** contain these sections in this order. Section headers **MUS
 
 **Empty-case content**: When a category has no assets, the subsection MUST still exist with text like `No HTTP route handlers detected.`
 
+**Empty-inventory diagnostic** *(added 2026-04-12)*: When the Entry Points subsection is empty AND `FileScanStats.in_scope_files > 50`, the subsection MUST include a diagnostic warning: `⚠️ No entry points detected in a repository with N source files. This likely indicates missing query coverage for the project's framework or registration pattern. Review the Limitations section.` This prevents users from mistaking a detection gap for a clean bill of health.
+
 #### `## Data Flow Diagram`
 
 **Required elements**:
