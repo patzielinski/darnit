@@ -1,15 +1,9 @@
 """Fixture — subprocess calls with hardcoded list arguments.
 
-Expected discovery:
-- ZERO subprocess findings. Every call here uses a literal list of string
-  literals as the first argument, so the ``_subprocess_call_is_clearly_safe``
-  filter should drop them all.
-
-- The ``subprocess.run(cmd)`` variant uses a variable and therefore STAYS
-  as a finding — we cannot rule out a bad caller without taint analysis.
-
-- The ``shell=True`` variant STAYS as a finding even with a literal string,
-  because shell=True is a structural smell.
+Expected discovery (four-tier classification):
+- Literal-list calls → tier "static" (severity=1, confidence=0.2)
+- ``subprocess.run(cmd)`` with a variable → tier "dynamic" (severity=6, confidence=0.8)
+- ``shell=True`` variant → tier "shell" (severity=8, confidence=0.9)
 """
 
 import subprocess

@@ -56,6 +56,32 @@ MCP_TOOL_DECORATOR = make_query(
 """,
 )
 
+#: Imperative MCP tool registration: ``server.add_tool(handler, name=...)``
+#: Captures: @obj @method @call
+MCP_TOOL_IMPERATIVE = make_query(
+    "python",
+    """
+(call
+  function: (attribute
+    object: (identifier) @obj
+    attribute: (identifier) @method)
+  arguments: (argument_list)) @call
+""",
+)
+
+#: Imperative HTTP route registration: ``app.add_url_rule(rule, endpoint, view_func)``
+#: Captures: @obj @method @call
+HTTP_ROUTE_IMPERATIVE = make_query(
+    "python",
+    """
+(call
+  function: (attribute
+    object: (identifier) @obj
+    attribute: (identifier) @method)
+  arguments: (argument_list)) @call
+""",
+)
+
 # ---------------------------------------------------------------------------
 # Subprocess / dangerous-call queries
 # ---------------------------------------------------------------------------
@@ -209,6 +235,16 @@ QUERY_REGISTRY: dict[str, PythonQuery] = {
         query=MCP_TOOL_DECORATOR,
         intent="decorator",
     ),
+    "python.entry.mcp_tool_imperative": PythonQuery(
+        id="python.entry.mcp_tool_imperative",
+        query=MCP_TOOL_IMPERATIVE,
+        intent="constructor_call",
+    ),
+    "python.entry.http_route_imperative": PythonQuery(
+        id="python.entry.http_route_imperative",
+        query=HTTP_ROUTE_IMPERATIVE,
+        intent="constructor_call",
+    ),
     "python.sink.dangerous_attr": PythonQuery(
         id="python.sink.dangerous_attr",
         query=DANGEROUS_ATTRIBUTE_CALL,
@@ -255,6 +291,8 @@ QUERY_REGISTRY: dict[str, PythonQuery] = {
 __all__ = [
     "DECORATED_ROUTE",
     "MCP_TOOL_DECORATOR",
+    "MCP_TOOL_IMPERATIVE",
+    "HTTP_ROUTE_IMPERATIVE",
     "DANGEROUS_ATTRIBUTE_CALL",
     "DANGEROUS_BARE_CALL",
     "DATASTORE_ATTRIBUTE_CALL",

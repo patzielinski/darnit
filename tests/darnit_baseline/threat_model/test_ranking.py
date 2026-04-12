@@ -253,3 +253,64 @@ class TestCandidateFindingInvariants:
                 rationale="x",
                 query_id="q",
             )
+
+
+class TestSubprocessTieredScoring:
+    """Verify three-tier subprocess scoring produces correct ranking order.
+
+    The tiers (static, parameterized, dynamic, shell) use direct severity
+    and confidence values assigned in ``_build_subprocess_finding`` rather
+    than the generic ``severity_for``/``confidence_for`` matrix.
+    """
+
+    @staticmethod
+    def _mk_tier(
+        tier: str,
+        severity: int,
+        confidence: float,
+        query_id: str,
+        line: int,
+    ) -> CandidateFinding:
+        return _mk(
+            severity=severity,
+            confidence=confidence,
+            query_id=query_id,
+            line=line,
+        )
+
+    def test_static_lt_parameterized_lt_dynamic_lt_shell(self) -> None:
+        static = self._mk_tier("static", severity=1, confidence=0.2, query_id="static", line=1)
+        param = self._mk_tier("parameterized", severity=4, confidence=0.6, query_id="param", line=2)
+        dynamic = self._mk_tier("dynamic", severity=6, confidence=0.8, query_id="dynamic", line=3)
+        shell = self._mk_tier("shell", severity=8, confidence=0.9, query_id="shell", line=4)
+
+        static_score = static.severity * static.confidence  # 0.2
+        param_score = param.severity * param.confidence  # 2.4
+        dynamic_score = dynamic.severity * dynamic.confidence  # 4.8
+        shell_score = shell.severity * shell.confidence  # 7.2
+
+        assert static_score < param_score < dynamic_score < shell_score
+
+    def test_ranking_order_matches_tiers(self) -> None:
+        static = self._mk_tier("static", severity=1, confidence=0.2, query_id="static", line=1)
+        param = self._mk_tier("parameterized", severity=4, confidence=0.6, query_id="param", line=2)
+        dynamic = self._mk_tier("dynamic", severity=6, confidence=0.8, query_id="dynamic", line=3)
+        shell = self._mk_tier("shell", severity=8, confidence=0.9, query_id="shell", line=4)
+
+        ranked = rank_findings([static, param, dynamic, shell])
+        assert [f.query_id for f in ranked] == ["shell", "dynamic", "param", "static"]
+
+    def test_static_excluded_by_cap_when_higher_tiers_exist(self) -> None:
+        """With a cap of 3, the static finding should be trimmed in favor
+        of higher-tier findings."""
+        static = self._mk_tier("static", severity=1, confidence=0.2, query_id="static", line=1)
+        param = self._mk_tier("parameterized", severity=4, confidence=0.6, query_id="param", line=2)
+        dynamic = self._mk_tier("dynamic", severity=6, confidence=0.8, query_id="dynamic", line=3)
+        shell = self._mk_tier("shell", severity=8, confidence=0.9, query_id="shell", line=4)
+
+        emitted, overflow = apply_cap(
+            [static, param, dynamic, shell], max_findings=3
+        )
+        emitted_ids = {f.query_id for f in emitted}
+        assert "static" not in emitted_ids
+        assert overflow.total == 1

@@ -95,6 +95,73 @@ class TestMcpServerFixture:
         assert names == {"greet", "echo"}
 
 
+class TestMcpServerImperativeFixture:
+    @pytest.fixture
+    def result(self):
+        return discover_all(FIXTURES / "mcp_server_imperative")
+
+    def test_finds_two_mcp_tools(self, result) -> None:
+        assert len(result.entry_points) == 2
+        for ep in result.entry_points:
+            assert ep.kind == EntryPointKind.MCP_TOOL
+            assert ep.framework == "mcp"
+
+    def test_mcp_tool_names(self, result) -> None:
+        names = {ep.name for ep in result.entry_points}
+        assert names == {"greet", "echo"}
+
+    def test_source_query_is_imperative(self, result) -> None:
+        for ep in result.entry_points:
+            assert ep.source_query == "python.entry.mcp_tool_imperative"
+
+
+class TestImperativeHttpRouteDetected:
+    def test_add_url_rule_detected(self, tmp_path: Path) -> None:
+        (tmp_path / "app.py").write_text(
+            "from flask import Flask\n"
+            "\n"
+            "app = Flask(__name__)\n"
+            "\n"
+            "def foo_handler():\n"
+            "    return 'foo'\n"
+            "\n"
+            'app.add_url_rule("/foo", "foo", foo_handler)\n'
+        )
+        result = discover_all(tmp_path)
+        imperative_eps = [
+            ep
+            for ep in result.entry_points
+            if ep.source_query == "python.entry.http_route_imperative"
+        ]
+        assert len(imperative_eps) == 1
+        ep = imperative_eps[0]
+        assert ep.kind == EntryPointKind.HTTP_ROUTE
+        assert ep.route_path == "/foo"
+        assert ep.framework == "flask"
+
+    def test_add_route_detected(self, tmp_path: Path) -> None:
+        (tmp_path / "app.py").write_text(
+            "from starlette.applications import Starlette\n"
+            "\n"
+            "app = Starlette()\n"
+            "\n"
+            "def homepage(request):\n"
+            "    return Response('hi')\n"
+            "\n"
+            'app.add_route("/home", homepage)\n'
+        )
+        result = discover_all(tmp_path)
+        imperative_eps = [
+            ep
+            for ep in result.entry_points
+            if ep.source_query == "python.entry.http_route_imperative"
+        ]
+        assert len(imperative_eps) == 1
+        ep = imperative_eps[0]
+        assert ep.kind == EntryPointKind.HTTP_ROUTE
+        assert ep.route_path == "/home"
+
+
 class TestSubprocessTaintedFixture:
     @pytest.fixture
     def result(self):
@@ -158,39 +225,88 @@ class TestDatastoreBareImportFixture:
         assert len(info_findings) == 3  # one per data store
 
 
-class TestSubprocessLiteralListFilter:
-    """H3 regression: ``subprocess.run([...])`` with a literal list of string
-    literals must NOT produce a finding. Variable args and shell=True must.
+class TestSubprocessTieredClassification:
+    """Subprocess calls are classified into four tiers (static, parameterized,
+    dynamic, shell) with tier-specific severity and confidence scores.
+    Static literal-list calls are kept but scored very low.
     """
 
     @pytest.fixture
     def result(self):
         return discover_all(FIXTURES / "subprocess_literal_list")
 
-    def test_exactly_two_findings_after_filter(self, result) -> None:
-        # Literal-list calls filtered; variable and shell=True remain.
-        assert len(result.findings) == 2
+    def test_all_four_calls_produce_findings(self, result) -> None:
+        # All subprocess calls kept (including static), scored by tier.
+        assert len(result.findings) == 4
 
-    def test_both_remaining_findings_are_low_confidence(self, result) -> None:
-        for f in result.findings:
-            assert f.confidence == 0.3  # dangerous_sink_no_taint
+    def test_static_findings_have_lowest_scores(self, result) -> None:
+        # Static literal-list calls get severity=1, confidence=0.2.
+        static_findings = [
+            f for f in result.findings if "subprocess/static" in f.rationale
+        ]
+        assert len(static_findings) == 2
+        for f in static_findings:
+            assert f.severity == 1
+            assert f.confidence == 0.2
 
-    def test_filter_drops_subprocess_run_literal_list(self, result) -> None:
-        # Lines 21-23 and 27 in the fixture use literal lists; they MUST
-        # NOT appear in the findings.
-        dropped_lines = {21, 27}
-        finding_lines = {f.primary_location.line for f in result.findings}
-        assert dropped_lines.isdisjoint(finding_lines)
+    def test_dynamic_finding_scores_higher(self, result) -> None:
+        dynamic_findings = [
+            f for f in result.findings if "subprocess/dynamic" in f.rationale
+        ]
+        assert len(dynamic_findings) == 1
+        f = dynamic_findings[0]
+        assert f.severity == 6
+        assert f.confidence == 0.8
+
+    def test_shell_finding_scores_highest(self, result) -> None:
+        shell_findings = [
+            f for f in result.findings if "subprocess/shell" in f.rationale
+        ]
+        assert len(shell_findings) == 1
+        f = shell_findings[0]
+        assert f.severity == 8
+        assert f.confidence == 0.9
 
     def test_variable_arg_call_is_kept(self, result) -> None:
-        # Line 30 uses ``subprocess.run(cmd, ...)`` with a variable.
+        # Line 24 uses ``subprocess.run(cmd, ...)`` with a variable.
         kept_lines = {f.primary_location.line for f in result.findings}
-        assert 30 in kept_lines
+        assert 24 in kept_lines
 
     def test_shell_true_call_is_kept(self, result) -> None:
-        # Line 35 uses ``shell=True`` with a literal string.
+        # Line 29 uses ``shell=True`` with a literal string.
         kept_lines = {f.primary_location.line for f in result.findings}
-        assert 35 in kept_lines
+        assert 29 in kept_lines
+
+
+class TestConfigDrivenSubprocess:
+    """Config-driven subprocess calls should get elevated confidence (0.9)
+    because the command argument originates from a dict/config lookup,
+    matching the TOML-driven command construction attack surface.
+    """
+
+    @pytest.fixture
+    def result(self):
+        return discover_all(FIXTURES / "config_driven_subprocess")
+
+    def test_finds_at_least_one_finding(self, result) -> None:
+        assert len(result.findings) >= 1
+
+    def test_config_driven_elevated_confidence(self, result) -> None:
+        # The fixture's subprocess.run(full_cmd, ...) should be detected as
+        # config-driven because full_cmd is built from config["command"] and
+        # config.get("args", []) within the same function scope.
+        config_findings = [
+            f for f in result.findings if f.confidence >= 0.9
+        ]
+        assert len(config_findings) >= 1
+
+    def test_rationale_mentions_configuration(self, result) -> None:
+        config_findings = [
+            f for f in result.findings if f.confidence >= 0.9
+        ]
+        assert len(config_findings) >= 1
+        for f in config_findings:
+            assert "configuration" in f.rationale.lower() or "config" in f.rationale.lower()
 
 
 class TestGoHttpHandlerFixture:
@@ -603,6 +719,41 @@ class TestDiscoverAllOrchestrator:
         )
         assert result.file_scan_stats.shallow_mode is True
 
+    def test_empty_inventory_warning_on_large_repo(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """When a repo has many in-scope files but no entry points, a warning
+        should be logged indicating likely missing query coverage."""
+        import logging
+        from unittest.mock import patch
+
+        from darnit_baseline.threat_model.discovery_models import FileScanStats
+
+        fake_stats = FileScanStats(
+            total_files_seen=80,
+            excluded_dir_count=2,
+            unsupported_file_count=5,
+            in_scope_files=75,
+            by_language={"python": 75},
+            shallow_mode=False,
+            shallow_threshold=500,
+        )
+        # Return no scanned files so no entry points are discovered.
+        with (
+            patch(
+                "darnit_baseline.threat_model.ts_discovery.walk_repo",
+                return_value=([], fake_stats),
+            ),
+            caplog.at_level(logging.WARNING),
+        ):
+            result = discover_all(tmp_path)
+
+        assert result.entry_points == []
+        assert any(
+            "zero entry points found" in msg and "75" in msg
+            for msg in caplog.messages
+        ), f"Expected warning about zero entry points; got: {caplog.messages}"
+
     def test_extra_excludes_applied(self, tmp_path: Path) -> None:
         (tmp_path / "src" / "a.py").parent.mkdir()
         (tmp_path / "src" / "a.py").write_text("pass\n")
@@ -613,3 +764,97 @@ class TestDiscoverAllOrchestrator:
         )
         in_scope = {Path(p.location.file).name for p in result.call_graph}
         assert "big.py" not in in_scope
+
+
+# ---------------------------------------------------------------------------
+# Phase 9: Self-scan dogfood validation (SC-001a, SC-001b, SC-009, SC-002a)
+# ---------------------------------------------------------------------------
+
+REPO_ROOT = Path(__file__).resolve().parents[3]  # baseline-mcp root
+
+
+class TestSelfScanDogfood:
+    """Run discovery against the actual darnit repository.
+
+    These are the tests that would have caught the v1 gaps: empty asset
+    inventory, identical subprocess scores, and single-category STRIDE
+    output. They validate FR-001a, FR-004a, SC-001a, SC-001b, and SC-009.
+
+    We scope the scan to ``packages/`` (the production source) and raise
+    the shallow threshold to avoid shallow mode skipping subprocess queries.
+    The full repo root triggers shallow mode (>500 in-scope files from
+    docs/examples) which skips subprocess/call-graph analysis entirely.
+    """
+
+    @pytest.fixture(scope="class")
+    def result(self):
+        return discover_all(
+            REPO_ROOT / "packages",
+            config=DiscoveryConfig(shallow_threshold=2000),
+        )
+
+    def test_finds_entry_points_sc001a(self, result) -> None:
+        """SC-001a: self-scan must find MCP tool entry points.
+
+        Darnit registers tools via server.add_tool() in factory.py.
+        There are 2 static call sites (one for framework tools, one for
+        implementation tools). Both must be detected.
+        """
+        assert len(result.entry_points) >= 2, (
+            f"Expected at least 2 entry points from server.add_tool() calls; "
+            f"got {len(result.entry_points)}: {result.entry_points}"
+        )
+        mcp_tools = [
+            ep for ep in result.entry_points if ep.kind == EntryPointKind.MCP_TOOL
+        ]
+        assert len(mcp_tools) >= 2, (
+            f"Expected at least 2 MCP_TOOL entry points; got {len(mcp_tools)}"
+        )
+
+    def test_subprocess_scores_differentiated_sc001b(self, result) -> None:
+        """SC-001b: subprocess findings must NOT all have identical scores.
+
+        Static literal calls (e.g., ["git", "init"]) must score lower than
+        dynamic calls (e.g., resolved_cmd from config).
+        """
+        tampering_findings = [
+            f for f in result.findings
+            if f.category == StrideCategory.TAMPERING
+        ]
+        subprocess_findings = [
+            f for f in tampering_findings
+            if "subprocess" in f.title.lower() or "command injection" in f.title.lower()
+        ]
+        assert len(subprocess_findings) >= 5, (
+            f"Expected at least 5 subprocess findings; "
+            f"got {len(subprocess_findings)} (of {len(tampering_findings)} tampering, "
+            f"{len(result.findings)} total). "
+            f"Tampering titles: {[f.title for f in tampering_findings[:5]]}"
+        )
+        scores = [f.severity * f.confidence for f in subprocess_findings]
+        assert max(scores) > min(scores), (
+            f"All subprocess findings have identical score {scores[0]:.2f}. "
+            f"Expected differentiation between static/parameterized/dynamic tiers."
+        )
+
+    def test_stride_coverage_sc009(self, result) -> None:
+        """SC-009: self-scan must populate at least 2 STRIDE categories.
+
+        With entry points detected, Spoofing should be populated alongside
+        Tampering from subprocess findings.
+        """
+        categories_with_findings = {f.category for f in result.findings}
+        assert len(categories_with_findings) >= 2, (
+            f"Expected findings in at least 2 STRIDE categories; "
+            f"got {len(categories_with_findings)}: "
+            f"{[c.value for c in categories_with_findings]}"
+        )
+
+    def test_imperative_fixture_in_curated_suite_sc002a(self) -> None:
+        """SC-002a: imperative registration fixture must produce entry points."""
+        result = discover_all(FIXTURES / "mcp_server_imperative")
+        assert len(result.entry_points) >= 2
+        assert all(
+            ep.source_query == "python.entry.mcp_tool_imperative"
+            for ep in result.entry_points
+        )

@@ -179,7 +179,18 @@ def _render_asset_inventory(result: DiscoveryResult) -> list[str]:
                 f"| … | | | | *{len(result.entry_points) - 30} more entries not shown* |"
             )
     else:
-        md.append("No HTTP route handlers, CLI commands, or MCP tool endpoints detected.")
+        if result.file_scan_stats.in_scope_files > 50:
+            md.append(
+                f"⚠️ No entry points detected in a repository with "
+                f"{result.file_scan_stats.in_scope_files} source files. "
+                f"This likely indicates missing query coverage for the "
+                f"project's framework or registration pattern. Review the "
+                f"Limitations section."
+            )
+        else:
+            md.append(
+                "No HTTP route handlers, CLI commands, or MCP tool endpoints detected."
+            )
     md.append("")
 
     # Data Stores
