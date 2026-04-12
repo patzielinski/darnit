@@ -236,8 +236,12 @@ class TestSubprocessTieredClassification:
         return discover_all(FIXTURES / "subprocess_literal_list")
 
     def test_all_four_calls_produce_findings(self, result) -> None:
-        # All subprocess calls kept (including static), scored by tier.
-        assert len(result.findings) == 4
+        # All subprocess calls produce Tampering findings (4) plus DoS
+        # findings for calls without timeout (4).
+        tampering = [f for f in result.findings if f.category.value == "tampering"]
+        assert len(tampering) == 4
+        dos = [f for f in result.findings if f.category.value == "denial_of_service"]
+        assert len(dos) == 4
 
     def test_static_findings_have_lowest_scores(self, result) -> None:
         # Static literal-list calls get severity=1, confidence=0.2.

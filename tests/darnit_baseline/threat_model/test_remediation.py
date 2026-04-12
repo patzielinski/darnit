@@ -129,6 +129,7 @@ class TestFallbackBehavior:
                     "opengrep_available": False,
                     "opengrep_degraded_reason": "test fixture",
                 },
+                findings=[],
                 failure_reason="forced for test",
             ),
         )
@@ -241,6 +242,7 @@ class TestLlmVerificationFlag:
                     "opengrep_available": False,
                     "opengrep_degraded_reason": "forced",
                 },
+                findings=[],
                 failure_reason="forced for test",
             ),
         ):

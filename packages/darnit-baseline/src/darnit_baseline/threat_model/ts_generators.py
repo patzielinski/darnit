@@ -23,6 +23,9 @@ primary output generator for the threat model handler.
 from __future__ import annotations
 
 import json
+import os
+import re
+import subprocess
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime
@@ -106,6 +109,35 @@ def _risk_counts(findings: list[CandidateFinding]) -> dict[str, int]:
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _repo_display_name(repo_path: str) -> str:
+    """Derive a safe display name for the repository.
+
+    Tries git remote URL first (``owner/repo``), then falls back to the
+    directory basename.  Never leaks an absolute local path.
+    """
+    try:
+        proc = subprocess.run(  # noqa: S603,S607
+            ["git", "-C", repo_path, "remote", "get-url", "origin"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if proc.returncode == 0:
+            url = proc.stdout.strip()
+            # SSH: git@github.com:owner/repo.git  or  HTTPS: …/owner/repo.git
+            m = re.search(r"[:/]([^/:]+/[^/]+?)(?:\.git)?$", url)
+            if m:
+                return m.group(1)
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+        pass
+    return os.path.basename(os.path.abspath(repo_path))
+
+
+# ---------------------------------------------------------------------------
 # Per-section renderers
 # ---------------------------------------------------------------------------
 
@@ -122,7 +154,7 @@ def _render_executive_summary(
         sorted({ep.framework for ep in result.entry_points if ep.framework})
     )
     md.append(f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    md.append(f"**Repository:** `{repo_path}`")
+    md.append(f"**Repository:** `{_repo_display_name(repo_path)}`")
     md.append(f"**Languages scanned:** {languages or 'none'}")
     md.append(f"**Frameworks detected:** {frameworks or 'none'}")
     md.append("")
@@ -380,9 +412,39 @@ def _render_stride_threats(findings: list[CandidateFinding]) -> list[str]:
             md.append("No threats identified in this category.")
             md.append("")
             continue
+
+        # Split into detailed (CRITICAL/HIGH/MEDIUM) and summary (LOW)
+        detailed: list[CandidateFinding] = []
+        low: list[CandidateFinding] = []
         for f in cat_findings:
+            if _severity_band(f.severity, f.confidence) == "LOW":
+                low.append(f)
+            else:
+                detailed.append(f)
+
+        # Render CRITICAL/HIGH/MEDIUM findings with full detail
+        for f in detailed:
             counter[cat] += 1
             md.extend(_render_finding(f, counter[cat]))
+
+        # Render LOW findings as a compact summary table
+        if low:
+            md.append(
+                f"#### Low-risk findings ({len(low)})"
+            )
+            md.append("")
+            md.append("| # | Title | Location | Score |")
+            md.append("|---|-------|----------|-------|")
+            for f in low:
+                counter[cat] += 1
+                abbrev = _STRIDE_ABBREV[cat]
+                score = f.severity * f.confidence
+                loc = f"{f.primary_location.file}:{f.primary_location.line}"
+                md.append(
+                    f"| TM-{abbrev}-{counter[cat]:03d} | "
+                    f"{f.title} | `{loc}` | {score:.2f} |"
+                )
+            md.append("")
     return md
 
 
@@ -396,12 +458,124 @@ def _render_attack_chains(result: DiscoveryResult) -> list[str]:
         )
         md.append("")
         return md
-    # Attack chain detection across the structural discovery pipeline is
-    # a future enhancement. For now we report honestly that no chains
-    # were computed rather than emitting phantom chains.
-    md.append("No compound attack paths identified.")
+
+    chains = _detect_attack_chains(result)
+    if not chains:
+        md.append("No compound attack paths identified.")
+        md.append("")
+        return md
+
+    md.append(
+        "The following multi-hop paths connect external entry points to "
+        "dangerous sinks via intermediate functions. Each chain represents "
+        "a potential exploitation path that should be reviewed holistically."
+    )
     md.append("")
+
+    for idx, (ep, intermediary, sink_func, sink_file) in enumerate(chains, 1):
+        ep_label = ep.route_path or ep.name or ep.kind.value
+        md.append(f"### Chain {idx}: {ep_label} → {intermediary} → sink")
+        md.append("")
+        md.append(
+            f"1. **Entry point**: `{ep_label}` "
+            f"at `{ep.location.file}:{ep.location.line}`"
+        )
+        md.append(
+            f"2. **Intermediary**: `{intermediary}()` "
+            f"called from the entry point"
+        )
+        md.append(
+            f"3. **Sink**: `{sink_func}()` "
+            f"at `{sink_file}` contains a dangerous call"
+        )
+        md.append("")
+
     return md
+
+
+def _detect_attack_chains(
+    result: DiscoveryResult,
+) -> list[tuple[DiscoveredEntryPoint, str, str, str]]:
+    """Detect multi-hop paths: entry point → intermediary → sink.
+
+    Returns a list of (entry_point, intermediary_name, sink_function, sink_file)
+    tuples. Only intra-file chains are detected (cross-file call-graph
+    resolution is deferred).
+    """
+    if not result.call_graph or not result.entry_points or not result.findings:
+        return []
+
+    # Build per-file indices.
+    # functions_by_file: file → {func_name → CallGraphNode}
+    functions_by_file: dict[str, dict[str, Any]] = {}
+    for node in result.call_graph:
+        by_name = functions_by_file.setdefault(node.location.file, {})
+        by_name[node.function_name] = node
+
+    # findings_by_function: file → {func_name} for functions containing a
+    # dangerous finding (subprocess, eval, etc.)
+    # We approximate "function contains finding" by checking if the finding's
+    # file matches and its line is within the function's line range.
+    finding_locations: dict[str, list[int]] = {}
+    for f in result.findings:
+        finding_locations.setdefault(f.primary_location.file, []).append(
+            f.primary_location.line
+        )
+
+    funcs_with_sinks: dict[str, set[str]] = {}  # file → {func_name}
+    for file_path, by_name in functions_by_file.items():
+        file_finding_lines = set(finding_locations.get(file_path, []))
+        if not file_finding_lines:
+            continue
+        for func_name, node in by_name.items():
+            # Check if any finding line falls within this function's span
+            func_start = node.location.line
+            # Approximate function end: next function start or +100 lines
+            func_end = func_start + 100  # rough heuristic
+            for _other_name, other_node in by_name.items():
+                if (
+                    other_node.location.line > func_start
+                    and other_node.location.line < func_end
+                ):
+                    func_end = other_node.location.line
+            if any(func_start <= ln < func_end for ln in file_finding_lines):
+                funcs_with_sinks.setdefault(file_path, set()).add(func_name)
+
+    # Now find chains: entry_point (in file) → calls func → func has sink
+    chains: list[tuple[DiscoveredEntryPoint, str, str, str]] = []
+    seen: set[tuple[str, str, str]] = set()  # dedup by (ep_name, intermediary, sink)
+
+    for ep in result.entry_points:
+        ep_file = ep.location.file
+        if ep_file not in functions_by_file:
+            continue
+        file_funcs = functions_by_file[ep_file]
+        file_sinks = funcs_with_sinks.get(ep_file, set())
+        if not file_sinks:
+            continue
+
+        # Find the call graph node for the entry point function.
+        # Match by closest function definition at or before the entry point line.
+        ep_func = None
+        best_dist = float("inf")
+        for _fname, node in file_funcs.items():
+            dist = ep.location.line - node.location.line
+            if 0 <= dist < best_dist:
+                best_dist = dist
+                ep_func = node
+
+        if ep_func is None:
+            continue
+
+        # Check if any function called by the entry point contains a sink
+        for callee_name in ep_func.calls:
+            if callee_name in file_sinks and callee_name != ep_func.function_name:
+                key = (ep.name or "", callee_name, ep_file)
+                if key not in seen:
+                    seen.add(key)
+                    chains.append((ep, callee_name, callee_name, ep_file))
+
+    return chains[:10]  # cap to keep the report concise
 
 
 def _render_recommendations(findings: list[CandidateFinding]) -> list[str]:
@@ -477,9 +651,9 @@ def _render_verification_prompts() -> list[str]:
     )
     md.append("")
     md.append(
-        "*Findings marked with Risk LOW or MEDIUM are often noise in the "
-        "absence of taint analysis. The draft caps the top 50 findings by "
-        "severity × confidence; see Limitations for what was trimmed.*"
+        "*Findings marked with Risk LOW are rendered in a compact summary "
+        "table. Without taint analysis, many LOW and MEDIUM findings may be "
+        "noise — verify against the code snippets before acting on them.*"
     )
     md.append("")
     md.append(VERIFICATION_PROMPT_CLOSE)
@@ -525,10 +699,8 @@ def _render_limitations(
         md.append(
             "- Without Opengrep, findings for dangerous sinks (subprocess, "
             "eval, etc.) are emitted at low confidence because we cannot "
-            "confirm external input reaches the sink. Many such findings are "
-            "filtered by the literal-list safety check or deprioritized by "
-            "the top-N cap. Install Opengrep for higher-confidence taint "
-            "findings."
+            "confirm external input reaches the sink. Install Opengrep for "
+            "higher-confidence taint findings with data-flow traces."
         )
 
     if overflow is not None and overflow.total > 0:

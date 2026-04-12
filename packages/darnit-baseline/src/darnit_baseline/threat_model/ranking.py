@@ -104,13 +104,13 @@ def rank_findings(findings: list[CandidateFinding]) -> list[CandidateFinding]:
 def apply_cap(
     findings: list[CandidateFinding],
     max_findings: int,
-    diversity_threshold: float = 0.6,
+    diversity_threshold: float = 0.4,
 ) -> tuple[list[CandidateFinding], TrimmedOverflow]:
     """Trim the ranked list to at most ``max_findings`` entries.
 
     Runs a category-diversity tie-break: after filling the first
     ``max_findings`` ranks, if any single STRIDE category would account for
-    more than ``diversity_threshold`` (default 60%) of the emitted findings,
+    more than ``diversity_threshold`` (default 40%) of the emitted findings,
     demote low-ranked members of the dominant category and promote higher-
     ranked members of underrepresented categories until the dominance is
     broken (or we exhaust the promotion candidates).

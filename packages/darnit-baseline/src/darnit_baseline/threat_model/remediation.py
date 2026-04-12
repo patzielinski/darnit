@@ -20,10 +20,15 @@ from darnit.sieve.handler_registry import (
     HandlerResultStatus,
 )
 
-from .discovery_models import FileScanStats
-from .ranking import apply_cap, rank_findings
+from .discovery_models import CandidateFinding, FileScanStats
+from .ranking import rank_findings
 from .ts_discovery import DiscoveryConfig, discover_all
-from .ts_generators import generate_markdown_threat_model as ts_generate_markdown
+from .ts_generators import (
+    _severity_band,
+)
+from .ts_generators import (
+    generate_markdown_threat_model as ts_generate_markdown,
+)
 
 logger = get_logger("threat_model.remediation")
 
@@ -47,13 +52,15 @@ class _TsRunOutput:
     """Result of running the new tree-sitter pipeline + markdown generator.
 
     ``content`` is the rendered Markdown draft. ``evidence`` is the subset
-    of fields destined for ``HandlerResult.evidence``. ``failure_reason`` is
-    set iff ``content`` is None — callers should fall back to the legacy
-    generator.
+    of fields destined for ``HandlerResult.evidence``. ``findings`` is the
+    ranked finding list for building LLM consultation payloads.
+    ``failure_reason`` is set iff ``content`` is None — callers should fall
+    back to the legacy generator.
     """
 
     content: str | None
     evidence: dict[str, Any]
+    findings: list[CandidateFinding]
     failure_reason: str | None
 
 
@@ -86,15 +93,14 @@ def _run_ts_pipeline(
                 "entry_point_count": 0,
                 "data_store_count": 0,
                 "candidate_finding_count": 0,
-                "trimmed_overflow": {"by_category": {}, "total": 0},
                 "opengrep_available": False,
                 "opengrep_degraded_reason": f"ts_discovery failed: {exc}",
             },
+            findings=[],
             failure_reason=f"ts_discovery: {exc}",
         )
 
     ranked = rank_findings(result.findings)
-    emitted, overflow = apply_cap(ranked, max_findings=max_findings)
 
     evidence: dict[str, Any] = {
         "file_scan_stats": _asdict(result.file_scan_stats)
@@ -102,11 +108,7 @@ def _run_ts_pipeline(
         else _asdict(_empty_scan_stats()),
         "entry_point_count": len(result.entry_points),
         "data_store_count": len(result.data_stores),
-        "candidate_finding_count": len(emitted),
-        "trimmed_overflow": {
-            "by_category": {k.value: v for k, v in overflow.by_category.items()},
-            "total": overflow.total,
-        },
+        "candidate_finding_count": len(ranked),
         "opengrep_available": result.opengrep_available,
         "opengrep_degraded_reason": result.opengrep_degraded_reason,
     }
@@ -115,8 +117,8 @@ def _run_ts_pipeline(
         content = ts_generate_markdown(
             repo_path=local_path,
             result=result,
-            capped_findings=emitted,
-            overflow=overflow,
+            capped_findings=ranked,
+            overflow=None,
         )
     except Exception as exc:  # noqa: BLE001 — generator must never crash handler
         logger.warning(
@@ -127,11 +129,102 @@ def _run_ts_pipeline(
         return _TsRunOutput(
             content=None,
             evidence=evidence,
+            findings=ranked,
             failure_reason=f"ts_generators: {exc}",
         )
 
-    return _TsRunOutput(content=content, evidence=evidence, failure_reason=None)
+    return _TsRunOutput(
+        content=content, evidence=evidence, findings=ranked, failure_reason=None
+    )
 
+
+def _build_llm_consultation(
+    findings: list[CandidateFinding],
+    path: str,
+) -> dict[str, Any]:
+    """Build an LLM consultation payload for threat model verification.
+
+    Returns a structured dict that the calling agent can use to review
+    each finding and refine the generated threat model. The agent is
+    expected to:
+
+    1. Read the generated file at ``path``
+    2. For each finding in ``findings_to_review``, judge whether it is
+       a true positive or false positive based on the code snippet
+    3. For true positives, optionally enrich the rationale with
+       project-specific context
+    4. Remove false positives from the file
+    5. Commit the refined file
+    """
+    review_items: list[dict[str, Any]] = []
+    for f in findings:
+        band = _severity_band(f.severity, f.confidence)
+        item: dict[str, Any] = {
+            "title": f.title,
+            "category": f.category.value,
+            "severity_band": band,
+            "score": round(f.severity * f.confidence, 2),
+            "location": f"{f.primary_location.file}:{f.primary_location.line}",
+            "rationale": f.rationale,
+            "source": f.source.value,
+            "query_id": f.query_id,
+        }
+        if f.code_snippet:
+            marker_idx = f.code_snippet.marker_line - f.code_snippet.start_line
+            if 0 <= marker_idx < len(f.code_snippet.lines):
+                item["anchor_line"] = f.code_snippet.lines[marker_idx]
+
+        # Per-finding review guidance based on category and confidence
+        if band == "LOW":
+            item["review_hint"] = (
+                "LOW-risk finding — likely noise without taint analysis. "
+                "Verify briefly; remove if the code path is internal-only."
+            )
+        elif f.confidence < 0.5:
+            item["review_hint"] = (
+                "Low-confidence structural match. Check whether external "
+                "input actually reaches this code path."
+            )
+        else:
+            item["review_hint"] = (
+                "Review the code snippet. Does the described threat apply "
+                "given this project's architecture? If yes, consider adding "
+                "project-specific context (e.g., which callers reach this "
+                "sink, what data flows through it, what mitigations exist)."
+            )
+
+        review_items.append(item)
+
+    # Summary stats for the agent
+    from collections import Counter
+
+    band_counts = Counter(i["severity_band"] for i in review_items)
+    category_counts = Counter(i["category"] for i in review_items)
+
+    return {
+        "action": "review_threat_model",
+        "file_path": path,
+        "total_findings": len(review_items),
+        "summary": {
+            "by_severity": dict(band_counts),
+            "by_category": dict(category_counts),
+        },
+        "instructions": (
+            "The threat model at the file path above was generated by "
+            "darnit's tree-sitter structural analysis pipeline. Review "
+            "the findings below. For each finding:\n"
+            "1. Read the code at the indicated location\n"
+            "2. Judge: TRUE POSITIVE (real threat) or FALSE POSITIVE "
+            "(not a real threat in this project's context)\n"
+            "3. For true positives: enrich the finding's narrative in "
+            "the file with project-specific details (which callers "
+            "reach this code, what data flows through, existing "
+            "mitigations)\n"
+            "4. For false positives: remove the finding from the file\n"
+            "5. After reviewing all findings, commit the refined file"
+        ),
+        "findings_to_review": review_items,
+    }
 
 
 def generate_threat_model_handler(
@@ -212,6 +305,7 @@ def generate_threat_model_handler(
                     **ts_evidence,
                 },
             )
+        consultation = _build_llm_consultation(ts_output.findings, path)
         return HandlerResult(
             status=HandlerResultStatus.PASS,
             message=(
@@ -224,6 +318,7 @@ def generate_threat_model_handler(
                 "path": path,
                 "action": "created",
                 "llm_verification_required": True,
+                "llm_consultation": consultation,
                 "note": (
                     "Threat model produced by the tree-sitter discovery "
                     "pipeline. Review each finding against its embedded code "

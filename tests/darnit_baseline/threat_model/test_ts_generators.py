@@ -205,7 +205,9 @@ class TestFindingSnippetMarker:
     """T062: the >>> prefix must only appear on the marker line."""
 
     def test_marker_line_prefixed(self) -> None:
-        f = _finding(line=10)
+        # Use a MEDIUM+ severity so the finding renders with full detail
+        # (LOW findings are rendered as a compact summary table).
+        f = _finding(line=10, severity=6, confidence=0.8)
         result = _sample_result(findings=[f])
         emitted, overflow = apply_cap(rank_findings(result.findings), max_findings=50)
         draft = generate_markdown_threat_model(

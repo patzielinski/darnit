@@ -210,6 +210,49 @@ def _extract_kwarg(call_node: Any, kwarg_name: str, source: bytes) -> str | None
     return None
 
 
+def _is_kwarg_string_literal(call_node: Any, kwarg_name: str, source: bytes) -> bool:
+    """Return True if the named kwarg exists and its value is a string literal."""
+    for child in call_node.children:
+        if child.type == "argument_list":
+            for arg in child.children:
+                if arg.type == "keyword_argument":
+                    key_node = arg.child_by_field_name("name")
+                    val_node = arg.child_by_field_name("value")
+                    if key_node and val_node and _text(key_node, source) == kwarg_name:
+                        val_text = _text(val_node, source)
+                        return _strip_quotes(val_text) != val_text
+    return False
+
+
+def _find_enclosing_for_loop(node: Any) -> Any | None:
+    """Walk parent chain to find an enclosing ``for_statement``, if any."""
+    cursor = node.parent
+    while cursor is not None:
+        if cursor.type == "for_statement":
+            return cursor
+        cursor = cursor.parent
+    return None
+
+
+def _describe_for_loop_iterable(for_node: Any, source: bytes) -> str | None:
+    """Extract a human-readable label from a for-loop's iterable.
+
+    For ``for name, spec in registry.tools.items():``, returns
+    ``"registry.tools"``.  Returns ``None`` on unrecognised shapes.
+    """
+    # The iterable is the right-hand side of ``in``
+    # In tree-sitter python grammar: for_statement has fields "left" and "right"
+    right = for_node.child_by_field_name("right")
+    if right is None:
+        return None
+    text = _text(right, source)
+    # Strip common iterator suffixes
+    for suffix in (".items()", ".keys()", ".values()", ".entries()"):
+        if text.endswith(suffix):
+            return text[: -len(suffix)]
+    return text
+
+
 def _extract_first_positional_arg(call_node: Any, source: bytes) -> str | None:
     """Return the text of the first positional (non-keyword) argument.
 
@@ -381,30 +424,71 @@ def _extract_python_entry_points(
 
     # Imperative MCP tool registration: server.add_tool(handler, name=...)
     query = py_queries.QUERY_REGISTRY["python.entry.mcp_tool_imperative"].query
+    # Track for-loop–based registrations to emit one entry per loop, not per
+    # match (the loop body matches N times but represents one registration site
+    # that produces M tools at runtime).
+    _seen_loop_sites: set[int] = set()
     for caps in run_query(query, tree.root_node):
         method = _text(caps["method"][0], source)
         if method != "add_tool":
             continue
         call_node = caps["call"][0]
+
+        # Check whether the name kwarg is a string literal vs. a variable.
+        is_literal = _is_kwarg_string_literal(call_node, "name", source)
         tool_name = _extract_kwarg(call_node, "name", source)
         if tool_name is None:
-            # Fall back to the first positional argument name
             tool_name = _extract_first_positional_arg(call_node, source)
         if tool_name is None:
             continue
-        entries.append(
-            DiscoveredEntryPoint(
-                kind=EntryPointKind.MCP_TOOL,
-                name=tool_name,
-                location=_build_location(call_node, file.relpath),
-                language="python",
-                framework="mcp",
-                route_path=None,
-                http_method=None,
-                has_auth_decorator=False,
-                source_query="python.entry.mcp_tool_imperative",
+
+        if is_literal:
+            # Static name — one entry point per call site.
+            entries.append(
+                DiscoveredEntryPoint(
+                    kind=EntryPointKind.MCP_TOOL,
+                    name=tool_name,
+                    location=_build_location(call_node, file.relpath),
+                    language="python",
+                    framework="mcp",
+                    route_path=None,
+                    http_method=None,
+                    has_auth_decorator=False,
+                    source_query="python.entry.mcp_tool_imperative",
+                )
             )
-        )
+        else:
+            # Dynamic name (variable) — likely inside a for-loop registering
+            # multiple tools from a registry/dict.  Emit one entry per loop
+            # site rather than duplicating for each tree-sitter match.
+            for_loop = _find_enclosing_for_loop(call_node)
+            if for_loop is not None:
+                loop_id = for_loop.start_point[0]  # line number
+                if loop_id in _seen_loop_sites:
+                    continue  # already emitted for this loop
+                _seen_loop_sites.add(loop_id)
+                iterable = _describe_for_loop_iterable(for_loop, source)
+                label = (
+                    f"(dynamic — registered from {iterable})"
+                    if iterable
+                    else "(dynamic — loop registration)"
+                )
+            else:
+                label = f"(dynamic: {tool_name})"
+
+            entries.append(
+                DiscoveredEntryPoint(
+                    kind=EntryPointKind.MCP_TOOL,
+                    name=label,
+                    location=_build_location(call_node, file.relpath),
+                    language="python",
+                    framework="mcp",
+                    route_path=None,
+                    http_method=None,
+                    has_auth_decorator=False,
+                    source_query="python.entry.mcp_tool_imperative",
+                )
+            )
 
     # Imperative HTTP route registration: app.add_url_rule / app.add_route
     query = py_queries.QUERY_REGISTRY["python.entry.http_route_imperative"].query
@@ -559,6 +643,8 @@ def _classify_subprocess_arg_shape(call_node: Any, source: bytes) -> str:
     has_shell_true = False
 
     for child in args.named_children:
+        if child.type == "comment":
+            continue  # skip inline noqa / type: ignore comments
         if child.type == "keyword_argument":
             key_node = child.child_by_field_name("name")
             value_node = child.child_by_field_name("value")
@@ -826,6 +912,267 @@ def _extract_python_subprocess_findings(
                     "Opengrep taint analysis can confirm or dismiss this finding."
                 ),
                 query_id="python.sink.dangerous_bare",
+            )
+        )
+
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# Additional STRIDE category extractors
+# ---------------------------------------------------------------------------
+
+#: Broad exception handler types that may leak sensitive state.
+_BROAD_EXCEPT_TYPES = frozenset({"Exception", "BaseException"})
+
+#: Known subprocess/network calls that should have timeouts.
+_TIMEOUT_EXPECTED_CALLS = frozenset({
+    ("subprocess", "run"),
+    ("subprocess", "call"),
+    ("subprocess", "check_call"),
+    ("subprocess", "check_output"),
+    ("subprocess", "Popen"),
+    ("requests", "get"),
+    ("requests", "post"),
+    ("requests", "put"),
+    ("requests", "delete"),
+    ("requests", "patch"),
+    ("requests", "request"),
+    ("urllib", "urlopen"),
+    ("httpx", "get"),
+    ("httpx", "post"),
+})
+
+
+def _has_timeout_kwarg(call_node: Any, source: bytes) -> bool:
+    """Check if a call node has a ``timeout=`` keyword argument."""
+    for child in call_node.children:
+        if child.type == "argument_list":
+            for arg in child.children:
+                if arg.type == "keyword_argument":
+                    key_node = arg.child_by_field_name("name")
+                    if key_node and _text(key_node, source) == "timeout":
+                        return True
+    return False
+
+
+def _extract_python_info_disclosure_findings(
+    file: ScannedFile, source: bytes, tree: Any
+) -> list[CandidateFinding]:
+    """Detect patterns that may leak sensitive information."""
+    findings: list[CandidateFinding] = []
+
+    # Broad exception handlers (except Exception / bare except)
+    query = py_queries.QUERY_REGISTRY["python.info_disc.broad_except"].query
+    for caps in run_query(query, tree.root_node):
+        handler_type = _text(caps["handler"][0], source)
+        if handler_type not in _BROAD_EXCEPT_TYPES:
+            continue
+        body_node = caps["body"][0]
+        body_text = _text(body_node, source)
+        # Only flag if the handler re-raises or returns the exception
+        # (potential traceback leak). Skip handlers that just log.
+        if "traceback" in body_text or "str(e)" in body_text or "repr(e)" in body_text:
+            location = _build_location(caps["handler"][0], file.relpath)
+            snippet = _build_snippet(source, location.line)
+            findings.append(
+                CandidateFinding(
+                    category=StrideCategory.INFORMATION_DISCLOSURE,
+                    title=f"Broad except {handler_type} may leak error details",
+                    source=FindingSource.TREE_SITTER_STRUCTURAL,
+                    primary_location=location,
+                    related_assets=(),
+                    code_snippet=snippet,
+                    severity=severity_for(
+                        StrideCategory.INFORMATION_DISCLOSURE,
+                        has_taint_trace=False,
+                    ),
+                    confidence=0.5,
+                    rationale=(
+                        f"A broad ``except {handler_type}`` handler exposes "
+                        "exception details (traceback, str(e), or repr(e)). "
+                        "In production, this may leak internal file paths, "
+                        "stack frames, or sensitive state to callers."
+                    ),
+                    query_id="python.info_disc.broad_except",
+                )
+            )
+
+    # open() with variable path — potential path traversal
+    query = py_queries.QUERY_REGISTRY["python.info_disc.open_call"].query
+    for caps in run_query(query, tree.root_node):
+        call_node = caps["call"][0]
+        first_arg = _extract_first_positional_arg(call_node, source)
+        if first_arg is None:
+            continue
+        # Only flag when the argument is a variable (not a string literal)
+        stripped = _strip_quotes(first_arg)
+        if stripped != first_arg:
+            continue  # string literal — not interesting
+        location = _build_location(call_node, file.relpath)
+        snippet = _build_snippet(source, location.line)
+        findings.append(
+            CandidateFinding(
+                category=StrideCategory.INFORMATION_DISCLOSURE,
+                title=f"File open with variable path: {first_arg}",
+                source=FindingSource.TREE_SITTER_STRUCTURAL,
+                primary_location=location,
+                related_assets=(),
+                code_snippet=snippet,
+                severity=severity_for(
+                    StrideCategory.INFORMATION_DISCLOSURE,
+                    has_taint_trace=False,
+                ),
+                confidence=0.4,
+                rationale=(
+                    f"``open({first_arg})`` uses a variable path. If the path "
+                    "originates from user input without validation, this "
+                    "enables path traversal attacks (reading arbitrary files)."
+                ),
+                query_id="python.info_disc.open_call",
+            )
+        )
+
+    return findings
+
+
+def _extract_python_dos_findings(
+    file: ScannedFile, source: bytes, tree: Any
+) -> list[CandidateFinding]:
+    """Detect patterns that may cause denial of service."""
+    findings: list[CandidateFinding] = []
+
+    # subprocess / network calls without timeout
+    attr_query = py_queries.QUERY_REGISTRY["python.sink.dangerous_attr"].query
+    for caps in run_query(attr_query, tree.root_node):
+        obj = _text(caps["obj"][0], source)
+        method = _text(caps["method"][0], source)
+        if (obj, method) not in _TIMEOUT_EXPECTED_CALLS:
+            continue
+        call_node = caps["call"][0]
+        if _has_timeout_kwarg(call_node, source):
+            continue  # timeout present — not a DoS concern
+        location = _build_location(call_node, file.relpath)
+        snippet = _build_snippet(source, location.line)
+        findings.append(
+            CandidateFinding(
+                category=StrideCategory.DENIAL_OF_SERVICE,
+                title=f"No timeout on {obj}.{method}()",
+                source=FindingSource.TREE_SITTER_STRUCTURAL,
+                primary_location=location,
+                related_assets=(),
+                code_snippet=snippet,
+                severity=severity_for(
+                    StrideCategory.DENIAL_OF_SERVICE, has_taint_trace=False
+                ),
+                confidence=0.6,
+                rationale=(
+                    f"``{obj}.{method}()`` is called without a ``timeout`` "
+                    "parameter. A hung subprocess or unresponsive network "
+                    "endpoint will block the caller indefinitely, which can "
+                    "be exploited for denial of service."
+                ),
+                query_id="python.sink.dangerous_attr",
+            )
+        )
+
+    return findings
+
+
+def _extract_python_eop_findings(
+    file: ScannedFile, source: bytes, tree: Any
+) -> list[CandidateFinding]:
+    """Detect elevation of privilege patterns beyond eval/exec."""
+    findings: list[CandidateFinding] = []
+
+    # Dynamic import: importlib.import_module(...)
+    query = py_queries.QUERY_REGISTRY["python.eop.dynamic_import_attr"].query
+    for caps in run_query(query, tree.root_node):
+        call_node = caps["call"][0]
+        first_arg = _extract_first_positional_arg(call_node, source)
+        arg_label = first_arg or "..."
+        # Only interesting if argument is a variable, not a literal
+        if first_arg and _strip_quotes(first_arg) != first_arg:
+            continue
+        location = _build_location(call_node, file.relpath)
+        snippet = _build_snippet(source, location.line)
+        findings.append(
+            CandidateFinding(
+                category=StrideCategory.ELEVATION_OF_PRIVILEGE,
+                title=f"Dynamic import via importlib.import_module({arg_label})",
+                source=FindingSource.TREE_SITTER_STRUCTURAL,
+                primary_location=location,
+                related_assets=(),
+                code_snippet=snippet,
+                severity=severity_for(
+                    StrideCategory.ELEVATION_OF_PRIVILEGE,
+                    has_taint_trace=False,
+                ),
+                confidence=0.5,
+                rationale=(
+                    "Dynamic imports allow loading arbitrary modules at "
+                    "runtime. If the module name originates from untrusted "
+                    "input, an attacker can achieve arbitrary code execution."
+                ),
+                query_id="python.eop.dynamic_import_attr",
+            )
+        )
+
+    # __import__(...)
+    query = py_queries.QUERY_REGISTRY["python.eop.dynamic_import_bare"].query
+    for caps in run_query(query, tree.root_node):
+        call_node = caps["call"][0]
+        location = _build_location(call_node, file.relpath)
+        snippet = _build_snippet(source, location.line)
+        findings.append(
+            CandidateFinding(
+                category=StrideCategory.ELEVATION_OF_PRIVILEGE,
+                title="Dynamic import via __import__()",
+                source=FindingSource.TREE_SITTER_STRUCTURAL,
+                primary_location=location,
+                related_assets=(),
+                code_snippet=snippet,
+                severity=severity_for(
+                    StrideCategory.ELEVATION_OF_PRIVILEGE,
+                    has_taint_trace=False,
+                ),
+                confidence=0.4,
+                rationale=(
+                    "__import__() enables dynamic module loading. If the "
+                    "argument is derived from user input, this is an "
+                    "arbitrary code execution vector."
+                ),
+                query_id="python.eop.dynamic_import_bare",
+            )
+        )
+
+    # os.chmod / os.chown / os.setuid
+    query = py_queries.QUERY_REGISTRY["python.eop.permission_change"].query
+    for caps in run_query(query, tree.root_node):
+        method = _text(caps["method"][0], source)
+        call_node = caps["call"][0]
+        location = _build_location(call_node, file.relpath)
+        snippet = _build_snippet(source, location.line)
+        findings.append(
+            CandidateFinding(
+                category=StrideCategory.ELEVATION_OF_PRIVILEGE,
+                title=f"Permission modification via os.{method}()",
+                source=FindingSource.TREE_SITTER_STRUCTURAL,
+                primary_location=location,
+                related_assets=(),
+                code_snippet=snippet,
+                severity=severity_for(
+                    StrideCategory.ELEVATION_OF_PRIVILEGE,
+                    has_taint_trace=False,
+                ),
+                confidence=0.6,
+                rationale=(
+                    f"``os.{method}()`` modifies filesystem permissions or "
+                    "process identity. If arguments are influenced by "
+                    "untrusted input, this can be used for privilege "
+                    "escalation."
+                ),
+                query_id="python.eop.permission_change",
             )
         )
 
@@ -1272,31 +1619,41 @@ def _merge_opengrep_into_findings(
 
     Dedup strategy: if an Opengrep finding lands on the same (file, line)
     as an existing tree-sitter finding, the Opengrep finding wins (it has
-    higher confidence and may include a taint trace). Tree-sitter findings
-    at unique locations are kept. Opengrep findings at unique locations are
-    added.
+    higher confidence and may include a taint trace). ALL tree-sitter
+    findings at that location are replaced (the first is overwritten, the
+    rest are dropped). Tree-sitter findings at unique locations are kept.
+    Opengrep findings at unique locations are added.
     """
-    # Index tree-sitter findings by (file, line) for fast lookup
-    ts_index: dict[tuple[str, int], int] = {}
+    # Index ALL tree-sitter findings by (file, line) — there may be
+    # multiple findings at the same line (e.g. Tampering + DoS for a
+    # subprocess call).
+    ts_by_location: dict[tuple[str, int], list[int]] = {}
     for i, f in enumerate(ts_findings):
         key = (f.primary_location.file, f.primary_location.line)
-        ts_index[key] = i
+        ts_by_location.setdefault(key, []).append(i)
 
     merged = list(ts_findings)
-    replaced_indices: set[int] = set()
+    drop_indices: set[int] = set()
 
     for og in og_findings:
         key = (og.primary_location.file, og.primary_location.line)
-        if key in ts_index:
-            # Replace the tree-sitter finding with the richer Opengrep one
-            idx = ts_index[key]
-            if idx not in replaced_indices:
-                merged[idx] = og
-                replaced_indices.add(idx)
+        if key in ts_by_location:
+            indices = ts_by_location[key]
+            # Replace the first ts finding with the Opengrep one;
+            # drop all others at this location.
+            replaced_first = False
+            for idx in indices:
+                if not replaced_first:
+                    merged[idx] = og
+                    replaced_first = True
+                else:
+                    drop_indices.add(idx)
         else:
             # New location — add alongside tree-sitter findings
             merged.append(og)
 
+    if drop_indices:
+        merged = [f for i, f in enumerate(merged) if i not in drop_indices]
     return merged
 
 
@@ -1494,6 +1851,15 @@ def discover_all(
             if not shallow:
                 findings.extend(
                     _extract_python_subprocess_findings(file, source, tree)
+                )
+                findings.extend(
+                    _extract_python_info_disclosure_findings(file, source, tree)
+                )
+                findings.extend(
+                    _extract_python_dos_findings(file, source, tree)
+                )
+                findings.extend(
+                    _extract_python_eop_findings(file, source, tree)
                 )
                 call_graph.extend(_extract_python_call_graph(file, source, tree))
         elif lang == "go":

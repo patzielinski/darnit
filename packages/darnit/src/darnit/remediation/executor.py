@@ -513,11 +513,16 @@ class RemediationExecutor:
 
             try:
                 handler_result = handler_info.fn(handler_config, handler_ctx)
-                results.append({
+                result_entry: dict[str, Any] = {
                     "handler": invocation.handler,
                     "status": handler_result.status.value,
                     "message": handler_result.message,
-                })
+                }
+                # Propagate handler evidence — needed for llm_consultation,
+                # llm_verification_required, and other handler-to-agent signals.
+                if handler_result.evidence:
+                    result_entry["evidence"] = handler_result.evidence
+                results.append(result_entry)
                 # Propagate llm_enhance metadata for AI-assisted file customization
                 if (
                     handler_result.status == HandlerResultStatus.PASS

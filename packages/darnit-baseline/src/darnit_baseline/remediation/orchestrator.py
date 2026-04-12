@@ -615,7 +615,7 @@ def _apply_declarative_remediation(
                                     created_path, e,
                                 )
 
-            return {
+            result_dict: dict[str, Any] = {
                 "control_id": control_id,
                 "status": "applied",
                 "description": description,
@@ -626,6 +626,17 @@ def _apply_declarative_remediation(
                 "config_updated": config_updated,
                 "enhanced": enhanced,
             }
+            # Propagate handler evidence containing LLM consultation
+            # payloads so the MCP tool can surface them to the agent.
+            for handler_info in (result.details or {}).get("handlers", []):
+                evidence = handler_info.get("evidence", {})
+                if evidence.get("llm_verification_required"):
+                    result_dict["needs_review"] = True
+                    result_dict["llm_consultation"] = evidence.get(
+                        "llm_consultation"
+                    )
+                    break
+            return result_dict
         else:
             logger.error(f"Declarative remediation failed: {result.message}")
             return {
@@ -1156,6 +1167,70 @@ def _format_remediation_output(
         if not dry_run:
             md.append("Use `git diff` to inspect all modifications.")
             md.append("")
+
+    # LLM consultation section — surfaces structured review requests from
+    # handlers that set llm_verification_required (e.g., threat model).
+    consultation_results = [
+        r for r in results
+        if r.get("llm_consultation") and r.get("status") in ("applied", "would_apply")
+    ]
+    if consultation_results and not dry_run:
+        md.append("## 🤖 LLM Verification Required")
+        md.append("")
+        for r in consultation_results:
+            consultation = r["llm_consultation"]
+            cid = r.get("control_id", "?")
+            file_path = consultation.get("file_path", "?")
+            total = consultation.get("total_findings", 0)
+            summary = consultation.get("summary", {})
+
+            md.append(f"### {cid}: Review generated threat model")
+            md.append("")
+            md.append(f"**File:** `{file_path}`")
+            md.append(f"**Findings to review:** {total}")
+            md.append("")
+
+            # Severity breakdown
+            by_sev = summary.get("by_severity", {})
+            if by_sev:
+                md.append("| Severity | Count |")
+                md.append("|----------|-------|")
+                for sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
+                    if by_sev.get(sev, 0) > 0:
+                        md.append(f"| {sev} | {by_sev[sev]} |")
+                md.append("")
+
+            # Instructions
+            md.append(consultation.get("instructions", ""))
+            md.append("")
+
+            # HIGH and MEDIUM findings for immediate review
+            findings = consultation.get("findings_to_review", [])
+            high_medium = [
+                f for f in findings
+                if f.get("severity_band") in ("CRITICAL", "HIGH", "MEDIUM")
+            ]
+            if high_medium:
+                md.append(f"### Findings requiring review ({len(high_medium)})")
+                md.append("")
+                for f in high_medium:
+                    md.append(
+                        f"- **{f['severity_band']}** | "
+                        f"`{f['location']}` | "
+                        f"{f['title']}"
+                    )
+                    if f.get("review_hint"):
+                        md.append(f"  - *{f['review_hint']}*")
+                md.append("")
+
+            low = [f for f in findings if f.get("severity_band") == "LOW"]
+            if low:
+                md.append(
+                    f"*Plus {len(low)} LOW-risk findings rendered as a "
+                    f"summary table in the file. Spot-check a few but "
+                    f"these are likely acceptable as-is.*"
+                )
+                md.append("")
 
     if not dry_run and applied:
         md.append("Run the audit tool to verify the fixes.")

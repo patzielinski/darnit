@@ -182,6 +182,84 @@ IMPORT_FROM = make_query(
 )
 
 # ---------------------------------------------------------------------------
+# Information Disclosure queries
+# ---------------------------------------------------------------------------
+
+#: Broad exception handlers that might leak tracebacks or sensitive state.
+#: Matches ``except Exception`` / bare ``except:`` blocks.
+#: Captures: @handler @body
+BROAD_EXCEPT = make_query(
+    "python",
+    """
+(except_clause
+  (identifier) @handler
+  (block) @body)
+""",
+)
+
+#: Open file calls — ``open(path)`` / ``open(path, mode)`` — that may read
+#: arbitrary files without validation. Used for DoS (unbounded read) and
+#: Information Disclosure (path traversal).
+#: Captures: @func @call
+OPEN_CALL = make_query(
+    "python",
+    """
+(call
+  function: (identifier) @func
+  (#match? @func "^open$")) @call
+""",
+)
+
+# ---------------------------------------------------------------------------
+# Denial of Service queries
+# ---------------------------------------------------------------------------
+
+#: Attribute calls with no ``timeout`` keyword.  We match all attribute calls
+#: and filter in the extractor for subprocess.run / requests.get / etc.
+#: (Reuses DANGEROUS_ATTRIBUTE_CALL pattern — filtering is in the extractor.)
+
+# ---------------------------------------------------------------------------
+# Elevation of Privilege queries
+# ---------------------------------------------------------------------------
+
+#: Dynamic import: ``importlib.import_module(...)`` or ``__import__(...)``
+#: Captures: @func @call  (bare form) or @obj @method @call  (attribute form)
+DYNAMIC_IMPORT_ATTR = make_query(
+    "python",
+    """
+(call
+  function: (attribute
+    object: (identifier) @obj
+    attribute: (identifier) @method)
+  (#match? @obj "^importlib$")
+  (#match? @method "^import_module$")) @call
+""",
+)
+
+DYNAMIC_IMPORT_BARE = make_query(
+    "python",
+    """
+(call
+  function: (identifier) @func
+  (#match? @func "^__import__$")) @call
+""",
+)
+
+#: ``os.chmod`` / ``os.chown`` calls that modify file permissions.
+#: Captures: @obj @method @call
+PERMISSION_CHANGE = make_query(
+    "python",
+    """
+(call
+  function: (attribute
+    object: (identifier) @obj
+    attribute: (identifier) @method)
+  (#match? @obj "^os$")
+  (#match? @method "^(chmod|chown|setuid|setgid)$")) @call
+""",
+)
+
+# ---------------------------------------------------------------------------
 # Call graph queries
 # ---------------------------------------------------------------------------
 
@@ -285,6 +363,33 @@ QUERY_REGISTRY: dict[str, PythonQuery] = {
         query=CALL_INSIDE_FUNCTION,
         intent="structural",
     ),
+    # Information Disclosure
+    "python.info_disc.broad_except": PythonQuery(
+        id="python.info_disc.broad_except",
+        query=BROAD_EXCEPT,
+        intent="bare_call",
+    ),
+    "python.info_disc.open_call": PythonQuery(
+        id="python.info_disc.open_call",
+        query=OPEN_CALL,
+        intent="bare_call",
+    ),
+    # Elevation of Privilege
+    "python.eop.dynamic_import_attr": PythonQuery(
+        id="python.eop.dynamic_import_attr",
+        query=DYNAMIC_IMPORT_ATTR,
+        intent="bare_call",
+    ),
+    "python.eop.dynamic_import_bare": PythonQuery(
+        id="python.eop.dynamic_import_bare",
+        query=DYNAMIC_IMPORT_BARE,
+        intent="bare_call",
+    ),
+    "python.eop.permission_change": PythonQuery(
+        id="python.eop.permission_change",
+        query=PERMISSION_CHANGE,
+        intent="bare_call",
+    ),
 }
 
 
@@ -302,6 +407,11 @@ __all__ = [
     "IMPORT_FROM",
     "FUNCTION_DEFINITION",
     "CALL_INSIDE_FUNCTION",
+    "BROAD_EXCEPT",
+    "OPEN_CALL",
+    "DYNAMIC_IMPORT_ATTR",
+    "DYNAMIC_IMPORT_BARE",
+    "PERMISSION_CHANGE",
     "PythonQuery",
     "QUERY_REGISTRY",
 ]
