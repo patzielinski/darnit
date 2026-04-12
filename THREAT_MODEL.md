@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-**Generated:** 2026-04-12 18:44:01
+**Generated:** 2026-04-12 19:15:28
 **Repository:** `mlieberman85/darnit`
 **Languages scanned:** python, yaml
 **Frameworks detected:** mcp
@@ -2823,7 +2823,7 @@ No compound attack paths identified.
 ## Limitations
 
 - Scanned **173** in-scope files (python=129, yaml=44).
-- Skipped **48** vendor/build directories and **362** files in unsupported languages.
+- Skipped **48** vendor/build directories and **364** files in unsupported languages.
 - Opengrep taint analysis: available.
 
 *This is a threat-modeling aid, not an exhaustive vulnerability scan. Full dynamic and cross-function taint analysis is out of scope for darnit; use Kusari Inspector or an equivalent SAST tool for deeper coverage.*
