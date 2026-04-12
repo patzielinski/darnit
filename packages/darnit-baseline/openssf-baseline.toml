@@ -3200,6 +3200,15 @@ help_md = """Require SCA checks before release.
 3. Document release gating criteria
 """
 
+# GitHub App detection — Kusari Inspector provides SCA as a GitHub App,
+# so it won't appear in workflow files. Check the org installations API.
+[[controls."OSPS-VM-05.02".passes]]
+handler = "exec"
+command = ["gh", "api", "/orgs/$OWNER/installations", "--paginate", "--jq", ".installations[].app_slug"]
+pass_exit_codes = [0]
+expr = 'output.stdout.contains("kusari-inspector") || output.stdout.contains("snyk") || output.stdout.contains("socket-security")'
+timeout = 15
+
 [[controls."OSPS-VM-05.02".passes]]
 handler = "pattern"
 files = [".github/workflows/*.yml", ".github/workflows/*.yaml"]
@@ -3396,6 +3405,15 @@ help_md = """Enable automated SAST in CI.
 2. Configure code scanning workflow
 3. Block PRs on high severity findings
 """
+
+# GitHub App detection — Kusari Inspector provides SAST as a GitHub App,
+# so it won't appear in workflow files. Check the org installations API.
+[[controls."OSPS-VM-06.02".passes]]
+handler = "exec"
+command = ["gh", "api", "/orgs/$OWNER/installations", "--paginate", "--jq", ".installations[].app_slug"]
+pass_exit_codes = [0]
+expr = 'output.stdout.contains("kusari-inspector") || output.stdout.contains("sonarcloud")'
+timeout = 15
 
 [[controls."OSPS-VM-06.02".passes]]
 handler = "pattern"
