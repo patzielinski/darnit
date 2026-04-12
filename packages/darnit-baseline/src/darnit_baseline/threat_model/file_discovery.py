@@ -63,6 +63,11 @@ BASELINE_EXCLUDED_DIRS: frozenset[str] = frozenset(
         ".idea",
         ".vscode",
         ".DS_Store",
+        # Test directories — not production attack surface
+        "tests",
+        "test",
+        "testdata",
+        "fixtures",
     }
 )
 
