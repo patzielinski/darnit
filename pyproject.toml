@@ -119,6 +119,8 @@ exclude = [
     "build",
     "dist",
     ".eggs",
+    # Intentionally broken syntax fixture for FR-019 (parser error recovery test)
+    "tests/darnit_baseline/threat_model/fixtures/red_herrings/broken_syntax.py",
 ]
 
 [tool.ruff.lint]

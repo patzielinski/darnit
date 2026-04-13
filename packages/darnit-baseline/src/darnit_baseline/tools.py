@@ -892,8 +892,8 @@ def generate_threat_model(
     """
     Generate a STRIDE-based threat model for a repository.
 
-    Analyzes the codebase for entry points, auth mechanisms, data stores,
-    potential vulnerabilities, and hardcoded secrets.
+    Uses the tree-sitter structural discovery pipeline with optional
+    Opengrep taint enrichment.
 
     Args:
         owner: GitHub Org/User (auto-detected if not provided)
@@ -909,65 +909,46 @@ def generate_threat_model(
         Threat model report with identified threats and recommendations,
         or a confirmation message if output_path is provided.
     """
-    from darnit_baseline.threat_model import (
-        analyze_stride_threats,
-        detect_attack_chains,
-        detect_frameworks,
-        discover_all_assets,
-        discover_injection_sinks,
+    from darnit_baseline.threat_model.ranking import apply_cap, rank_findings
+    from darnit_baseline.threat_model.ts_discovery import discover_all
+    from darnit_baseline.threat_model.ts_generators import (
+        GeneratorOptions,
         generate_json_summary,
         generate_markdown_threat_model,
         generate_sarif_threat_model,
-        identify_control_gaps,
     )
 
     repo_path = Path(local_path).resolve()
     if not repo_path.exists():
         return f"❌ Error: Repository path not found: {repo_path}"
 
-    from darnit.core.utils import detect_owner_repo
-
-    detected_owner, detected_repo = detect_owner_repo(str(repo_path))
-    owner = owner or detected_owner
-    repo = repo or detected_repo
-
     try:
-        # Detect frameworks
-        frameworks = detect_frameworks(str(repo_path))
+        result = discover_all(repo_path)
+        ranked = rank_findings(result.findings)
+        emitted, overflow = apply_cap(ranked, max_findings=50)
 
-        # Discover assets
-        assets = discover_all_assets(str(repo_path), frameworks)
-
-        # Discover injection sinks
-        injection_sinks = discover_injection_sinks(str(repo_path))
-
-        # Analyze threats
-        threats = analyze_stride_threats(assets, injection_sinks)
-
-        # Detect attack chains
-        attack_chains = detect_attack_chains(threats, assets)
-
-        # Identify control gaps
-        control_gaps = identify_control_gaps(assets, threats)
-
-        # Validate detail_level
-        if detail_level not in ("summary", "detailed"):
-            detail_level = "detailed"
-
-        # Generate output
         if output_format == "sarif":
-            content = json.dumps(generate_sarif_threat_model(str(repo_path), threats, attack_chains), indent=2)
+            content = generate_sarif_threat_model(result, emitted)
         elif output_format == "json":
-            content = json.dumps(generate_json_summary(str(repo_path), frameworks, assets, threats, control_gaps, attack_chains), indent=2)
+            content = generate_json_summary(result, emitted, overflow)
         else:
-            content = generate_markdown_threat_model(str(repo_path), assets, threats, control_gaps, frameworks, detail_level, attack_chains)
+            options = GeneratorOptions(detail_level=detail_level)
+            content = generate_markdown_threat_model(
+                repo_path=str(repo_path),
+                result=result,
+                capped_findings=emitted,
+                overflow=overflow,
+                options=options,
+            )
 
-        # Write to disk if output_path provided
         if output_path:
             target = repo_path / output_path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content)
-            return f"Threat model written to {output_path} ({len(content)} bytes)"
+            return (
+                f"Threat model written to {output_path} ({len(content)} bytes, "
+                f"{len(emitted)} findings, {overflow.total} trimmed)"
+            )
 
         return content
     except Exception as e:
