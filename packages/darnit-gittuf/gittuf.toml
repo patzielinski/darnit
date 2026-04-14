@@ -49,8 +49,9 @@ steps = [
     "2. gittuf trust add-policy-key -k <signing-key> --policy-key <pub-key>",
     "3. gittuf trust apply --local-only -k <signing-key>",
     "4. gittuf policy init -k <signing-key>",
-    "5. Add rules: gittuf policy add-rule ...",
-    "6. gittuf policy apply --local-only -k <signing-key>",
+    "5. Add persons for rules: gittuf policy add-person --person-ID <name> --public-key <pub-key>",
+    "6. Add rules: gittuf policy add-rule ...",
+    "7. gittuf policy apply --local-only -k <signing-key>",
 ]
 
 # =============================================================================
